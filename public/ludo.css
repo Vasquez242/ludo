@@ -323,7 +323,7 @@ body {
     0 0 0 6px #1c212c,
     0 0 0 8px rgba(227, 185, 77, 0.5),
     0 40px 80px rgba(0, 0, 0, 0.55);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .cell {
@@ -397,27 +397,15 @@ body {
   box-shadow: 0 2px 8px rgba(0,0,0,0.35);
 }
 
-/* ============ Tokens ============ */
-.token {
-  position: absolute;
-  width: calc(100% / 15 * 0.78);
-  height: calc(100% / 15 * 0.78);
-  border-radius: 50%;
-  cursor: default;
-  transition: left 0.22s ease, top 0.22s ease, transform 0.2s ease;
-  z-index: 5;
-  display: grid;
-  place-items: center;
-  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.4);
-  border: 2px solid rgba(255, 255, 255, 0.75);
-}
 .token::after {
   content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
   width: 38%;
   height: 38%;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.55);
-  transform: translate(-18%, -18%);
 }
 .token.red    { background: radial-gradient(circle at 32% 28%, #ff8a8d, var(--red) 60%, var(--red-dark)); }
 .token.green  { background: radial-gradient(circle at 32% 28%, #7fdcae, var(--green) 60%, var(--green-dark)); }
@@ -692,11 +680,11 @@ body {
   }
   .board-wrap {
     width: 100%;
-    max-width: min(92vw, 75vh - 240px);
+    max-width: clamp(280px, 92vw, 75vh - 240px);
   }
   .side-panel {
     width: 100%;
-    max-width: min(92vw, 75vh - 240px);
+    max-width: clamp(280px, 92vw, 75vh - 240px);
     flex-direction: row;
     flex-wrap: wrap;
     gap: 8px;

@@ -75,7 +75,10 @@
             <h2>Code du salon</h2>
             <div class="code-box">
               <span id="room-code-display">Création...</span>
-              <button id="btn-copy-code" class="copy-btn" title="Copier le code">Copier</button>
+              <div style="display:flex;gap:5px;">
+                <button id="btn-copy-code" class="copy-btn" title="Copier le code">Copier</button>
+                <button id="btn-share-whatsapp" class="copy-btn" style="background:#25d366;border-color:#25d366;color:#fff;font-weight:700;" title="Inviter via WhatsApp">Inviter 📱</button>
+              </div>
             </div>
           </div>
           <div class="setup-section">
@@ -155,9 +158,12 @@
       <h2 id="victory-title">Victoire !</h2>
       <p id="victory-text"></p>
       <div id="ranking" class="ranking"></div>
-      <div class="modal-actions">
-        <button id="continue-btn" class="btn-secondary">Continuer la partie</button>
-        <button id="new-game-btn" class="start-btn">Nouvelle partie</button>
+      <div class="modal-actions" style="flex-direction:column;gap:8px;display:flex;">
+        <button id="continue-btn" class="btn-secondary" style="width:100%;">Continuer la partie</button>
+        <div style="display:flex;gap:8px;width:100%;">
+          <button id="share-result-btn" class="btn-secondary" style="flex:1;background:var(--surface-2);border-color:var(--gold-soft);color:var(--gold);">Partager 🏆</button>
+          <button id="new-game-btn" class="start-btn" style="flex:1;margin-top:0;height:auto;padding:16px 0;">Nouvelle partie</button>
+        </div>
       </div>
     </div>
   </div>

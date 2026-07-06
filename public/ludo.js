@@ -231,6 +231,42 @@ $('#btn-copy-code').addEventListener('click', () => {
   }).catch(console.error);
 });
 
+$('#btn-share-whatsapp').addEventListener('click', () => {
+  const code = $('#room-code-display').textContent;
+  const shareUrl = `${window.location.origin}/ludo.html?join=${code}`;
+  const text = `Rejoins ma partie de Ludo Royal ! 👑\nCode du salon : ${code}\nClique ici pour jouer : ${shareUrl}`;
+  window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
+});
+
+$('#share-result-btn').addEventListener('click', () => {
+  let myRank = 1;
+  if (mp.active) {
+    const selfPlayer = state.players.find(p => p.color === mp.myColor);
+    if (selfPlayer) {
+      myRank = selfPlayer.finishedRank || (state.ranking.includes(selfPlayer) ? state.ranking.indexOf(selfPlayer) + 1 : state.players.length);
+    }
+  } else {
+    // Mode local, prend le classement de la couleur rouge
+    const redPlayer = state.players.find(p => p.color === 'red');
+    if (redPlayer) {
+      myRank = redPlayer.finishedRank || (state.ranking.includes(redPlayer) ? state.ranking.indexOf(redPlayer) + 1 : state.players.length);
+    }
+  }
+
+  const rankText = myRank === 1 ? '1er 🏆' : `${myRank}e`;
+  const text = `J'ai terminé ${rankText} à Ludo Royal ! 👑 Rejoins-moi pour une partie : ${window.location.origin}/ludo.html`;
+
+  if (navigator.share) {
+    navigator.share({
+      title: 'Ludo Royal — Mon Score',
+      text: text,
+      url: `${window.location.origin}/ludo.html`
+    }).catch(console.error);
+  } else {
+    window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
+  }
+});
+
 $('#join-btn').addEventListener('click', () => {
   requestShakePermission();
   const code = $('#room-code-input').value.trim();
@@ -332,6 +368,11 @@ function createTokens() {
 }
 
 function renderTokens() {
+  if (document.querySelectorAll('.token').length === 0 && state.players.length > 0) {
+    createTokens();
+    return;
+  }
+
   // regrouper par case pour gérer l'empilement
   const groups = {};
   state.players.forEach((p, pIdx) => {
@@ -450,6 +491,7 @@ function beginTurn() {
   if (mp.active) {
     if (mp.role === 'client') {
       updateOnlineControls();
+      enableShakeListener();
       return;
     }
     // Hôte
@@ -458,6 +500,8 @@ function beginTurn() {
       diceBtn.disabled = true;
       setHint(`${p.name} (IA) réfléchit…`);
       setTimeout(() => rollDice(), 750);
+    } else {
+      enableShakeListener();
     }
   } else {
     // Mode local standard
@@ -468,6 +512,7 @@ function beginTurn() {
     } else {
       diceBtn.disabled = false;
       setHint('Cliquez sur le dé pour lancer');
+      enableShakeListener();
     }
   }
 }
@@ -492,6 +537,7 @@ diceBtn.addEventListener('click', () => {
 });
 
 async function rollDice() {
+  disableShakeListener();
   if (state.busy || state.rolled) return;
 
   if (mp.active && mp.role === 'client') {
@@ -628,13 +674,16 @@ async function moveToken(pIdx, tIdx) {
   const dice = state.dice;
   let extraTurn = dice === 6;
 
+  if (mp.active && mp.role === 'host') {
+    broadcastAnimateMove(pIdx, tIdx, dice);
+  }
+
   if (p.tokens[tIdx] === -1) {
     // sortie de base
     p.tokens[tIdx] = 0;
     sfx.out();
     el.classList.add('hop');
     renderTokens();
-    if (mp.active && mp.role === 'host') broadcastState();
     log(`<strong>${p.name}</strong> sort un pion de sa base`);
     await sleep(320);
     el.classList.remove('hop');
@@ -645,7 +694,6 @@ async function moveToken(pIdx, tIdx) {
       sfx.step();
       el.classList.add('hop');
       renderTokens();
-      if (mp.active && mp.role === 'host') broadcastState();
       await sleep(230);
       el.classList.remove('hop');
     }
@@ -1098,6 +1146,10 @@ function handleClientMessage(data) {
     log('La partie commence en ligne !', true);
   }
 
+  if (data.type === 'ANIMATE_MOVE') {
+    clientAnimateMove(data.pIdx, data.tIdx, data.dice);
+  }
+
   if (data.type === 'SYNC_STATE') {
     // Mettre à jour l'état de jeu avec celui reçu de l'hôte
     state.current = data.state.current;
@@ -1131,6 +1183,49 @@ function handleClientMessage(data) {
       showVictory(winner);
     }
   }
+}
+
+function broadcastAnimateMove(pIdx, tIdx, dice) {
+  Object.values(mp.conn).forEach(conn => {
+    if (conn.open) {
+      conn.send({
+        type: 'ANIMATE_MOVE',
+        pIdx: pIdx,
+        tIdx: tIdx,
+        dice: dice
+      });
+    }
+  });
+}
+
+async function clientAnimateMove(pIdx, tIdx, dice) {
+  state.busy = true;
+  clearMovable();
+  const p = state.players[pIdx];
+  const el = document.getElementById(tokenId(pIdx, tIdx));
+  if (!el) {
+    state.busy = false;
+    return;
+  }
+
+  if (p.tokens[tIdx] === -1) {
+    p.tokens[tIdx] = 0;
+    sfx.out();
+    el.classList.add('hop');
+    renderTokens();
+    await sleep(320);
+    el.classList.remove('hop');
+  } else {
+    for (let s = 0; s < dice; s++) {
+      p.tokens[tIdx]++;
+      sfx.step();
+      el.classList.add('hop');
+      renderTokens();
+      await sleep(230);
+      el.classList.remove('hop');
+    }
+  }
+  state.busy = false;
 }
 
 function updateClientLobbyUI() {
@@ -1186,7 +1281,7 @@ function handleDeviceMotion(event) {
   if (p.isAI) return;
   if (mp.active && p.color !== mp.myColor) return;
 
-  const acc = event.accelerationIncludingGravity;
+  const acc = event.acceleration || event.accelerationIncludingGravity;
   if (!acc) return;
 
   const x = acc.x;
@@ -1218,10 +1313,7 @@ function handleDeviceMotion(event) {
 }
 
 function initShakeDetection() {
-  if (typeof DeviceMotionEvent === 'undefined' || typeof DeviceMotionEvent.requestPermission !== 'function') {
-    // Navigateurs Android et de bureau non-iOS
-    window.addEventListener('devicemotion', handleDeviceMotion, true);
-  }
+  // Désactivé par défaut. L'activation dynamique se fait dans beginTurn()
 }
 
 function requestShakePermission() {
@@ -1229,7 +1321,7 @@ function requestShakePermission() {
     DeviceMotionEvent.requestPermission()
       .then((permissionState) => {
         if (permissionState === 'granted') {
-          window.addEventListener('devicemotion', handleDeviceMotion, true);
+          enableShakeListener();
           log('Capteur de secouement activé avec succès !', true);
         }
       })
@@ -1237,6 +1329,28 @@ function requestShakePermission() {
   }
 }
 
+function checkUrlParams() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const joinCode = urlParams.get('join');
+  if (joinCode) {
+    $('#btn-mode-local').classList.remove('active');
+    $('#btn-mode-online').classList.add('active');
+    $('#local-setup').style.display = 'none';
+    $('#online-setup').style.display = 'block';
+
+    $('#btn-choose-host').classList.remove('active');
+    $('#btn-choose-join').classList.add('active');
+    $('#online-host-pane').style.display = 'none';
+    $('#online-join-pane').style.display = 'flex';
+    $('#start-btn').style.display = 'none';
+
+    $('#room-code-input').value = joinCode.trim();
+    $('#player-name-input').focus();
+    log(`Invitation détectée pour le salon <strong>${joinCode}</strong> !`);
+  }
+}
+
 /* ==================== INIT ==================== */
 initShakeDetection();
 renderSetup();
+checkUrlParams();
