@@ -525,7 +525,11 @@ function aiLevelLabel(l) { return l === 'easy' ? 'Facile' : l === 'hard' ? 'Diff
 function renderGameModes() {
   const cfg = $('#game-mode-config');
   if (!cfg) return;
+  // Purger les anciens enfants dynamiques pour éviter les doublons au re-render
+  cfg.querySelectorAll('.dynamic-render').forEach(el => el.remove());
+
   const aiCfg = document.createElement('div');
+  aiCfg.className = 'dynamic-render';
   aiCfg.style.marginTop = '12px';
   aiCfg.innerHTML = `
     <div class="rule-label" style="margin-bottom:8px;">Difficulté de l'IA</div>
@@ -544,6 +548,7 @@ function renderGameModes() {
 
   // Achievements preview + reset
   const achDiv = document.createElement('div');
+  achDiv.className = 'dynamic-render';
   achDiv.style.marginTop = '14px';
   achDiv.innerHTML = `
     <div class="rule-label" style="margin-bottom:8px;">Succès <span class="ach-count">(${unlockedAchievements.size}/${ACHIEVEMENTS.length})</span></div>
@@ -553,8 +558,10 @@ function renderGameModes() {
     <button id="reset-achievements" class="btn-secondary" style="margin-top:8px;padding:8px;font-size:12px;width:100%;">Réinitialiser les succès</button>`;
   cfg.appendChild(achDiv);
   achDiv.querySelector('#reset-achievements').addEventListener('click', () => {
-    if (confirm('Réinitialiser tous les succès débloqués ?')) resetAchievements();
-    renderGameModes();
+    if (confirm('Réinitialiser tous les succès débloqués ?')) {
+      resetAchievements();
+      renderGameModes();
+    }
   });
 }
 
@@ -943,34 +950,43 @@ function createTokens() {
   applyTokenSkin();
 }
 
-function renderTokens() {
-  if (document.querySelectorAll('.token').length === 0 && state.players.length > 0) {
-    createTokens();
-    return;
+// Batched render via requestAnimationFrame pour éviter les reflows multiples
+const renderTokens = (() => {
+  let pending = false;
+  function flush() {
+    pending = false;
+    doRender();
   }
-
-  // regrouper par case pour gérer l'empilement
-  const groups = {};
-  state.players.forEach((p, pIdx) => {
-    p.tokens.forEach((pos, tIdx) => {
-      const [r, c] = coordFor(p.color, pos, tIdx);
-      const key = pos === -1 ? `base-${pIdx}-${tIdx}` : `${r},${c}`;
-      (groups[key] = groups[key] || []).push({ pIdx, tIdx, r, c, pos });
+  function doRender() {
+    if (document.querySelectorAll('.token').length === 0 && state.players.length > 0) {
+      createTokens();
+      return;
+    }
+    const groups = {};
+    state.players.forEach((p, pIdx) => {
+      p.tokens.forEach((pos, tIdx) => {
+        const [r, c] = coordFor(p.color, pos, tIdx);
+        const key = pos === -1 ? `base-${pIdx}-${tIdx}` : `${r},${c}`;
+        (groups[key] = groups[key] || []).push({ pIdx, tIdx, r, c, pos });
+      });
     });
-  });
-
-  Object.values(groups).forEach((items) => {
-    items.forEach(({ pIdx, tIdx, r, c, pos }, i) => {
-      const el = document.getElementById(tokenId(pIdx, tIdx));
-      if (!el) return;
-      const [or, oc] = items.length > 1 ? STACK_OFFSETS[Math.min(i, 4)] : [0, 0];
-      // centrer le pion dans la case (pion = 0.78 case)
-      el.style.top = `${((r + 0.11 + or) / 15) * 100}%`;
-      el.style.left = `${((c + 0.11 + oc) / 15) * 100}%`;
-      el.classList.toggle('finished', pos === FINISH_POS);
+    Object.values(groups).forEach((items) => {
+      items.forEach(({ pIdx, tIdx, r, c, pos }, i) => {
+        const el = document.getElementById(tokenId(pIdx, tIdx));
+        if (!el) return;
+        const [or, oc] = items.length > 1 ? STACK_OFFSETS[Math.min(i, 4)] : [0, 0];
+        el.style.top = `${((r + 0.11 + or) / 15) * 100}%`;
+        el.style.left = `${((c + 0.11 + oc) / 15) * 100}%`;
+        el.classList.toggle('finished', pos === FINISH_POS);
+      });
     });
-  });
-}
+  }
+  return function renderTokens() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(flush);
+  };
+})();
 
 /* ==================== PANNEAU LATÉRAL ==================== */
 function renderPlayers() {
@@ -1785,7 +1801,11 @@ function showManualAnswerUI(encoded) {
     </div>
   `;
   document.getElementById('manual-copy-out').onclick = () => {
-    navigator.clipboard.writeText(encoded).then(() => { document.getElementById('manual-copy-out').textContent = 'Copié !'; setTimeout(() => document.getElementById('manual-copy-out').textContent = 'Copier', 1500); });
+    navigator.clipboard.writeText(encoded).then(() => {
+      document.getElementById('manual-copy-out').textContent = 'Copié !';
+      setTimeout(() => document.getElementById('manual-copy-out').textContent = 'Copier', 1500);
+    });
+  };
 }
 
 function setupManualDataChannel() {
@@ -1798,10 +1818,11 @@ function setupManualDataChannel() {
       mp.role = 'host';
       mp.active = true;
       // Stocker comme une connexion factice compatible
-      mp.conn[manualMode.peer.connectionId || 'manual'] = {
+      const fakePeerId = 'manual-client-' + Date.now();
+      mp.conn[fakePeerId] = {
         open: true,
-        send: (data) => dc.send(JSON.stringify(data)),
-        peer: 'manual-client',
+        send: (data) => { try { dc.send(JSON.stringify(data)); } catch (e) { console.warn(e); } },
+        peer: fakePeerId,
         color: 'green',
         playerName: 'Adversaire',
       };
@@ -1814,16 +1835,16 @@ function setupManualDataChannel() {
       mp.myColor = 'green';
       mp.conn[mp.roomCode] = {
         open: true,
-        send: (data) => dc.send(JSON.stringify(data)),
+        send: (data) => { try { dc.send(JSON.stringify(data)); } catch (e) { console.warn(e); } },
         peer: 'manual-host',
       };
-      dc.send(JSON.stringify({ type: 'JOIN', name: prompt('Votre pseudo :') || 'Client' }));
+      const pseudo = prompt('Votre pseudo :') || 'Client';
+      dc.send(JSON.stringify({ type: 'JOIN', name: pseudo }));
     }
   };
   dc.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
-      // Router vers les handlers existants
       if (manualMode.role === 'host') {
         const conn = Object.values(mp.conn)[0];
         if (conn) handleHostMessage(conn, data);
@@ -1831,6 +1852,9 @@ function setupManualDataChannel() {
         handleClientMessage(data);
       }
     } catch (err) { console.error('Manual message error', err); }
+  };
+  dc.onclose = () => {
+    log(`<span style="color:var(--red)">Connexion manuelle fermée.</span>`);
   };
 }
 
@@ -2584,47 +2608,6 @@ document.addEventListener('keydown', (e) => {
     }
   }
 });
-
-/* ==================== Performance: raf pour renderTokens ==================== */
-const perf = {
-  rafId: null,
-  pendingRender: false,
-};
-function requestRenderTokens() {
-  if (perf.pendingRender) return;
-  perf.pendingRender = true;
-  perf.rafId = requestAnimationFrame(() => {
-    perf.pendingRender = false;
-    renderTokensImmediate();
-  });
-}
-function renderTokensImmediate() {
-  // Code original de renderTokens déplacé ici
-  if (document.querySelectorAll('.token').length === 0 && state.players.length > 0) {
-    createTokens();
-    return;
-  }
-  const groups = {};
-  state.players.forEach((p, pIdx) => {
-    p.tokens.forEach((pos, tIdx) => {
-      const [r, c] = coordFor(p.color, pos, tIdx);
-      const key = pos === -1 ? `base-${pIdx}-${tIdx}` : `${r},${c}`;
-      (groups[key] = groups[key] || []).push({ pIdx, tIdx, r, c, pos });
-    });
-  });
-  Object.values(groups).forEach((items) => {
-    items.forEach(({ pIdx, tIdx, r, c, pos }, i) => {
-      const el = document.getElementById(tokenId(pIdx, tIdx));
-      if (!el) return;
-      const [or, oc] = items.length > 1 ? STACK_OFFSETS[Math.min(i, 4)] : [0, 0];
-      el.style.top = `${((r + 0.11 + or) / 15) * 100}%`;
-      el.style.left = `${((c + 0.11 + oc) / 15) * 100}%`;
-      el.classList.toggle('finished', pos === FINISH_POS);
-    });
-  });
-}
-// Garde compatibilité avec le code existant qui appelle renderTokens()
-window.renderTokens = renderTokensImmediate;
 
 /* ==================== INIT ==================== */
 loadAchievements();

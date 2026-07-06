@@ -511,19 +511,22 @@ Pastille flottante bas-gauche, sync `online`/`offline` events. Vert pulsant (en 
 
 Overlay rouge `role="alertdialog"` capturant `window.error` + `unhandledrejection`. Boutons "Recharger" / "Fermer".
 
-### 5.28 Accessibilité clavier (Prio 4)
+### 5.29 Mode Multi-broker P2P avec fallback (Audit 2026-07-07)
 
-| Touche | Effet |
-|---|---|
-| `Space` | Lancer le dé |
-| `Enter` | Valider pion sélectionné |
-| `← → ↑ ↓` | Naviguer entre pions jouables |
-| `M` | Toggle musique |
-| `S` | Toggle son |
-| `Échap` | Fermer modale/erreur |
-| `Tab` | Skip-link → plateau |
+- **Problème initial** : le broker PeerJS public `0.peerjs.com` est sporadiquement indisponible, et l'ancienne gestion d'erreurs faisait crasher l'app.
+- **Solution actuelle** : liste `PEER_BROKERS` avec 2 brokers, bascule automatique après timeout de 8s, compteur `hostRetryCount` / `clientRetryCount` pour éviter les boucles infinies.
+- **STUN servers** : Google STUN intégré dans `iceServers` pour traverser NAT.
 
-`:focus-visible` avec outline doré. `@media (prefers-reduced-motion: reduce)` désactive toutes les animations.
+### 5.30 Mode Manuel (SDP copy-paste) (Audit 2026-07-07)
+
+Plan B 100% sans serveur pour les cas où PeerJS est totalement inaccessible. Échange d'**offre/réponse SDP** via copy-paste (messenger, email, WhatsApp).
+- `RTCPeerConnection` direct + `RTCDataChannel` + ICE candidats STUN.
+- UI dédiée avec zones textarea pour copier/coller les codes base64.
+- Bridge automatique vers les handlers `handleHostMessage` / `handleClientMessage` existants.
+
+### 5.31 Render Batching via RAF (Audit 2026-07-07)
+
+`renderTokens()` est encapsulé dans une IIFE qui batche tous les appels via `requestAnimationFrame` pour éviter les reflows multiples lors des animations de pions (correction du doublon `renderTokens` / `renderTokensImmediate`).
 
 ---
 
@@ -1036,19 +1039,33 @@ Procédure Netlify standard :
 
 ## 17. Dette technique
 
+### 17.1 Bugs corrigés lors de l'audit du 2026-07-07
+
+| # | Bug | Sévérité | Description | Correction appliquée |
+|---|---|---|---|---|
+| 1 | Doublon `renderTokens` / `renderTokensImmediate` | 🔴 Critique | Deux fonctions identiques, `window.renderTokens = renderTokensImmediate` ne changeait pas la référence locale → RAF batching mort | Fusion en IIFE unique avec batching RAF |
+| 2 | Doublon `requestRenderTokens` | 🟡 Moyenne | Fonction définie puis jamais appelée, code mort | Supprimée |
+| 3 | `renderGameModes()` doublons UI | 🟡 Moyenne | À chaque appel, ajoutait `aiCfg` et `achDiv` sans purge → listeners et DOM cumulés | Tag `.dynamic-render` + purge en début de fonction |
+| 4 | Syntax error `showManualAnswerUI` | 🔴 Critique | Accolade fermante manquante sur `.onclick` arrow function | Accolade correctement placée |
+| 5 | `mp.peer.connectionId` invalide | 🟠 Haute | `RTCPeerConnection` n'a pas de propriété `connectionId` → `undefined`, clé manuelle au lieu d'un ID unique | Remplacé par `'manual-client-' + Date.now()` |
+| 6 | `dc.send` sans try/catch | 🟢 Basse | Si le DataChannel est fermé entre l'ouverture et l'envoi, exception silencieuse | Ajout try/catch sur les `.send()` |
+| 7 | Pas de `dc.onclose` handler en mode manuel | 🟡 Moyenne | Déconnexion silencieuse, utilisateur ne sait pas | Ajout `dc.onclose` avec log |
+| 8 | Multi-broker fallback absent | 🔴 Critique | Bug multi-joueur signalé : impossible de créer/rejoindre un salon si PeerJS down | ✅ Corrigé (Prio broker + timeout + retry) |
+| 9 | `location.reload()` brutal sur erreur | 🟡 Moyenne | Perte de contexte, frustration utilisateur | Remplacé par logs en jeu, l'utilisateur peut retry |
+
+### 17.2 Dette restante
+
 | Élément | Sévérité | Description | Action suggérée |
 |---|---|---|---|
-| **2 lockfiles** | 🟡 Moyenne | `package-lock.json` ET `pnpm-lock.yaml` présents. Risque d'incohérence. | Garder uniquement `pnpm-lock.yaml`, supprimer `package-lock.json`. |
 | **`ludo02/` vide** | 🟢 Basse | Répertoire vide (ancien submodule). | Supprimer. |
-| **`metadata.title = "v0 App"`** | 🟡 Moyenne | Le titre du site est celui de v0, pas du projet. | Remplacer par `"Ludo Royal"`. |
 | **`typescript.ignoreBuildErrors: true`** | 🟡 Moyenne | Peut masquer des erreurs TS futures. | Retirer quand le projet grossit. |
-| **`Button` shadcn inutilisé** | 🟢 Basse | Code mort. | Soit l'utiliser, soit le retirer. |
-| **Pas de LocalStorage** | 🟢 Basse | Recharger la page perd la partie. | Ajouter une option de sauvegarde. |
-| **Pas de tests** | 🟡 Moyenne | Aucun test unitaire / e2e. | Ajouter au moins un smoke test Playwright. |
+| **Tests automatisés** | 🟡 Moyenne | Aucun test unitaire / e2e. | Ajouter Playwright smoke + Vitest logique pure. |
 | **README.md quasi vide** | 🟡 Moyenne | `# ludo` (1 ligne). | Enrichir avec instructions d'installation et gameplay. |
-| **Règle "1 pion max par case" non vérifiée** | 🟠 Haute | En théorie, un joueur peut empiler 2 pions sur une même case. Le code n'empêche pas. | Décider : bloquer ou autoriser. |
-| **`lang="en"` dans `<html>`** | 🟢 Basse | UI en français mais `lang="en"`. | Changer en `lang="fr"`. |
-| **Aucun fallback pour Google Fonts** | 🟢 Basse | Si bloqueur, polices fallback (system-ui) fonctionnent. | OK tel quel. |
+| **Règle "1 pion max par case" non vérifiée** | 🟠 Haute | Un joueur peut empiler 2 pions sur une même case non-sûre. Le code n'empêche pas. | Décider : bloquer ou autoriser officiellement. |
+| **CSP explicite** | 🟢 Basse | Aucun en-tête CSP défini (dépend de Netlify defaults). | Ajouter via `netlify.toml` headers. |
+| **Minification JS** | 🟢 Basse | `ludo.js` ~60 KB non minifié. | Terser ou esbuild. |
+| **Documentation protocole PeerJS** | 🟢 Basse | Pas de schéma des messages échangés. | Ajouter annexe dédiée. |
+| **Aucun test E2E multi-joueur** | 🟡 Moyenne | Le mode manuel SDP n'a jamais été testé E2E. | Script Playwright simulant 2 pages. |
 
 ---
 
@@ -1167,6 +1184,15 @@ Modifier [`public/ludo.js`](public/ludo.js). Fonctions clés : `getMovableTokens
 
 ### Q14 : Pourquoi le dé s'affiche à plat et non en 3D ?
 Le CSS utilise `perspective: 400px` mais pas de rotation 3D effective — c'est une rotation 2D (`@keyframes roll`). Volontairement sobre.
+
+### Q15 : Pourquoi le multi-joueur ne fonctionne pas ?
+Plusieurs causes possibles — toutes corrigées depuis l'audit du 2026-07-07 :
+1. **Broker PeerJS public indisponible** : désormais bascule automatique vers `peerjs.com` après 8s.
+2. **`location.reload()` brutal** sur erreur : remplacé par logs + retry utilisateur.
+3. **Pas de fallback** : un Mode Manuel SDP copy-paste est disponible sans aucun serveur.
+
+### Q16 : Pourquoi les pions ne bougent-ils pas fluidement ?
+Depuis l'audit du 2026-07-07, `renderTokens()` est batché via `requestAnimationFrame` (RAF) — les animations de pas-à-pas déclenchent un seul rendu par frame, plus un par case.
 
 ---
 
