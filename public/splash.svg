@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1366" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1366">
+      <stop offset="0" stop-color="#0d0f14"/>
+      <stop offset="1" stop-color="#161a22"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="200">
+      <stop offset="0" stop-color="#f4d06f"/>
+      <stop offset="1" stop-color="#c9a13b"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="40%" r="50%">
+      <stop offset="0" stop-color="rgba(227,185,77,0.25)"/>
+      <stop offset="1" stop-color="rgba(227,185,77,0)"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1366" fill="url(#bg)"/>
+  <rect width="1024" height="1366" fill="url(#glow)"/>
+  <g transform="translate(512,683)">
+    <g transform="scale(8)">
+      <path d="M-60 34 L-52 12 L-44 24 L-32 4 L-20 24 L-12 12 L-4 34 Z" fill="url(#gold)" stroke="#b8912f" stroke-width="1.5"/>
+      <circle cx="-52" cy="10" r="3" fill="#f4d06f"/>
+      <circle cx="-32" cy="4" r="3.5" fill="#f4d06f"/>
+      <circle cx="-12" cy="10" r="3" fill="#f4d06f"/>
+    </g>
+  </g>
+  <text x="512" y="950" text-anchor="middle" font-family="Georgia, serif" font-size="80" font-weight="700" fill="#e3b94d" letter-spacing="2">Ludo</text>
+  <text x="512" y="1050" text-anchor="middle" font-family="Georgia, serif" font-size="80" font-weight="700" fill="#f2f3f5" letter-spacing="2">Royal</text>
+  <text x="512" y="1180" text-anchor="middle" font-family="sans-serif" font-size="28" font-weight="400" fill="#9aa3b2" opacity="0.8">Chargement...</text>
+</svg>

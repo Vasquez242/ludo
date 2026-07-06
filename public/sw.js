@@ -1,62 +1,79 @@
-const CACHE_NAME = 'ludo-royal-v1';
-const ASSETS = [
+const CACHE_VERSION = 'ludo-royal-v2';
+const STATIC_CACHE = CACHE_VERSION + '-static';
+const RUNTIME_CACHE = CACHE_VERSION + '-runtime';
+
+const STATIC_ASSETS = [
   '/ludo.html',
   '/ludo.css',
   '/ludo.js',
+  '/ludo.worker.js',
   '/icon.svg',
   '/icon-light-32x32.png',
   '/icon-dark-32x32.png',
   '/apple-icon.png',
-  '/manifest.json'
+  '/manifest.json',
+  '/splash.svg',
+  '/placeholder.svg',
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS);
-    }).then(() => self.skipWaiting())
+    caches.open(STATIC_CACHE).then((cache) => cache.addAll(STATIC_ASSETS)).then(() => self.skipWaiting())
   );
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.map((key) => {
-          if (key !== CACHE_NAME) {
-            return caches.delete(key);
-          }
-        })
-      );
-    }).then(() => self.clients.claim())
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => !k.startsWith(CACHE_VERSION)).map((k) => caches.delete(k)))
+    ).then(() => self.clients.claim())
   );
 });
 
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
+  if (event.data && event.data.type === 'CLEAR_CACHE') {
+    event.waitUntil(
+      caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+    );
+  }
+});
+
 self.addEventListener('fetch', (event) => {
-  // Let PeerJS signaling traffic and browser sync events bypass the cache
-  if (event.request.url.includes('peerjs') && !event.request.url.includes('cdn')) {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+
+  // Bypass PeerJS signaling
+  if (url.host !== self.location.host) return;
+
+  // Network-first for navigations (HTML)
+  if (req.mode === 'navigate') {
+    event.respondWith(
+      fetch(req).then((res) => {
+        const clone = res.clone();
+        caches.open(RUNTIME_CACHE).then((cache) => cache.put(req, clone));
+        return res;
+      }).catch(() => caches.match(req).then((cached) => cached || caches.match('/ludo.html')))
+    );
     return;
   }
+
+  // Cache-first for static assets
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(event.request).then((response) => {
-        // Cache dynamic Google Fonts stylesheets and fonts
-        if (event.request.url.includes('fonts.googleapis.com') || event.request.url.includes('fonts.gstatic.com')) {
-          const responseClone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseClone);
-          });
+    caches.match(req).then((cached) => {
+      if (cached) return cached;
+      return fetch(req).then((res) => {
+        if (res.ok && (res.type === 'basic' || res.type === 'default')) {
+          const clone = res.clone();
+          caches.open(RUNTIME_CACHE).then((cache) => cache.put(req, clone));
         }
-        return response;
+        return res;
+      }).catch(() => {
+        if (req.destination === 'image') {
+          return caches.match('/placeholder.svg');
+        }
       });
-    }).catch(() => {
-      // Offline fallback
-      if (event.request.mode === 'navigate') {
-        return caches.match('/ludo.html');
-      }
     })
   );
 });

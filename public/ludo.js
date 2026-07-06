@@ -75,7 +75,7 @@ const sfx = {
 
 /* ---------- État du jeu ---------- */
 const state = {
-  players: [],       // { color, name, isAI, tokens: [pos x4], finishedRank }
+  players: [],       // { color, name, isAI, tokens, finishedRank, captures, wasCaptured }
   current: 0,
   dice: 0,
   rolled: false,
@@ -83,6 +83,7 @@ const state = {
   busy: false,
   gameOver: false,
   ranking: [],
+  totalMoves: 0,
 };
 
 /* ---------- État Multijoueur ---------- */
@@ -94,12 +95,551 @@ const mp = {
   roomCode: null,
   myColor: 'red', // Hôte est Rouge par défaut
   players: [], // Liste des joueurs du salon : { peerId, name, color, isAI, connected }
+  reconnectTokens: {}, // token -> { peerId, color, issuedAt } (côté hôte uniquement)
+  myReconnectToken: null, // token personnel (côté client, persisté en LocalStorage)
 };
 
 let setupCount = 4;
 let setupTypes = { red: 'human', green: 'ai', yellow: 'ai', blue: 'ai' };
 
 const COLOR_SETS = { 2: ['red', 'yellow'], 3: ['red', 'green', 'yellow'], 4: COLORS };
+
+/* ---------- Règles paramétrables ---------- */
+const RULES_DEF = [
+  { id: 'requireSixToExit',   label: '6 obligatoire pour sortir', desc: 'Forcer un 6 pour faire sortir un pion de la base', default: true },
+  { id: 'captureEnabled',     label: 'Captures activées',        desc: 'Envoyer un pion adverse à la base',                default: true },
+  { id: 'threeSixPenalty',    label: '3 six = tour perdu',       desc: 'Pénalité classique : trois 6 consécutifs',        default: true },
+  { id: 'extraTurnOnCapture', label: 'Gain de tour (capture)',   desc: 'Rejouer après avoir capturé un pion adverse',      default: true },
+  { id: 'extraTurnOnFinish',  label: 'Gain de tour (arrivée)',   desc: 'Rejouer après avoir atteint la maison',            default: true },
+  { id: 'safeCellsActive',    label: 'Cases sûres',              desc: 'Cases où les pions ne peuvent être capturés',     default: true },
+];
+const rules = {};
+RULES_DEF.forEach(r => { rules[r.id] = r.default; });
+
+function renderRules() {
+  const cfg = $('#rules-config');
+  if (!cfg) return;
+  cfg.innerHTML = '';
+  RULES_DEF.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'rule-row';
+    row.innerHTML = `
+      <div>
+        <div class="rule-label">${r.label}</div>
+        <div class="rule-desc">${r.desc}</div>
+      </div>
+      <button class="rule-toggle ${rules[r.id] ? 'on' : ''}" data-rule="${r.id}" aria-label="${r.label}" aria-pressed="${rules[r.id]}"></button>`;
+    row.querySelector('.rule-toggle').addEventListener('click', (e) => {
+      const btn = e.currentTarget;
+      rules[r.id] = !rules[r.id];
+      btn.classList.toggle('on', rules[r.id]);
+      btn.setAttribute('aria-pressed', String(rules[r.id]));
+    });
+    cfg.appendChild(row);
+  });
+}
+
+function renderResumeBanner() {
+  const banner = document.createElement('div');
+  banner.id = 'resume-banner';
+  banner.className = 'resume-banner';
+  const saved = hasSavedGame();
+  const rejoin = loadReconnectToken();
+  if (saved) {
+    banner.innerHTML = `
+      <div class="resume-info">
+        <strong>Partie en cours détectée</strong>
+        <span>Reprendre là où vous vous êtes arrêté ?</span>
+      </div>
+      <div class="resume-actions">
+        <button id="resume-yes" class="start-btn" style="margin:0;padding:10px 18px;font-size:13px;">Reprendre</button>
+        <button id="resume-no" class="btn-secondary" style="margin:0;padding:10px 18px;font-size:13px;">Nouvelle</button>
+      </div>`;
+    banner.querySelector('#resume-yes').addEventListener('click', () => {
+      if (restoreFromSave()) {
+        setupScreen.classList.remove('active');
+        gameScreen.classList.add('active');
+        logEl.innerHTML = '';
+        buildBoard();
+        createTokens();
+        renderPlayers();
+        renderRules();
+        log('Partie restaurée depuis la sauvegarde locale.', true);
+        beginTurn();
+      }
+    });
+    banner.querySelector('#resume-no').addEventListener('click', () => {
+      clearSavedState();
+      banner.remove();
+    });
+  } else if (rejoin && rejoin.roomCode) {
+    banner.innerHTML = `
+      <div class="resume-info">
+        <strong>Connexion précédente</strong>
+        <span>Salle <code>${rejoin.roomCode}</code> — rejoindre automatiquement ?</span>
+      </div>
+      <div class="resume-actions">
+        <button id="rejoin-yes" class="start-btn" style="margin:0;padding:10px 18px;font-size:13px;">Rejoindre</button>
+        <button id="rejoin-no" class="btn-secondary" style="margin:0;padding:10px 18px;font-size:13px;">Ignorer</button>
+      </div>`;
+    banner.querySelector('#rejoin-yes').addEventListener('click', () => {
+      $('#btn-mode-online').click();
+      $('#btn-choose-join').click();
+      $('#room-code-input').value = rejoin.roomCode;
+      $('#player-name-input').value = 'Joueur';
+      $('#player-name-input').focus();
+      banner.remove();
+    });
+    banner.querySelector('#rejoin-no').addEventListener('click', () => {
+      clearReconnectToken();
+      banner.remove();
+    });
+  } else {
+    return;
+  }
+  const card = document.querySelector('.setup-card');
+  if (card) card.parentNode.insertBefore(banner, card);
+}
+
+/* ---------- Persistance (LocalStorage) ---------- */
+const STORAGE_KEY = 'ludo-royal-state-v1';
+let autoSaveEnabled = true;
+let saveTimer = null;
+
+function serializeState() {
+  return JSON.stringify({
+    version: 1,
+    savedAt: Date.now(),
+    state: {
+      players: state.players.map(p => ({ color: p.color, name: p.name, isAI: p.isAI, tokens: [...p.tokens], finishedRank: p.finishedRank })),
+      current: state.current,
+      dice: state.dice,
+      rolled: state.rolled,
+      sixCount: state.sixCount,
+      busy: state.busy,
+      gameOver: state.gameOver,
+      ranking: state.ranking.map(p => p.color),
+    },
+    rules: { ...rules },
+    setupCount,
+    setupTypes: { ...setupTypes },
+  });
+}
+
+function scheduleSave() {
+  if (!autoSaveEnabled) return;
+  if (state.gameOver || state.players.length === 0) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try { localStorage.setItem(STORAGE_KEY, serializeState()); } catch (e) { /* quota */ }
+  }, 400);
+}
+
+function loadSavedState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.version !== 1) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+
+function clearSavedState() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+}
+
+function hasSavedGame() {
+  const s = loadSavedState();
+  return !!(s && s.state && s.state.players && s.state.players.length > 0 && !s.state.gameOver);
+}
+
+function restoreFromSave() {
+  const saved = loadSavedState();
+  if (!saved) return false;
+  setupCount = saved.setupCount || 4;
+  if (saved.setupTypes) setupTypes = { ...saved.setupTypes };
+  if (saved.rules) Object.assign(rules, saved.rules);
+  const s = saved.state;
+  state.players = s.players.map(p => ({ color: p.color, name: p.name, isAI: p.isAI, tokens: [...p.tokens], finishedRank: p.finishedRank }));
+  state.current = s.current;
+  state.dice = s.dice;
+  state.rolled = s.rolled;
+  state.sixCount = s.sixCount;
+  state.busy = s.busy;
+  state.gameOver = s.gameOver;
+  state.ranking = s.ranking.map(c => state.players.find(p => p.color === c));
+  return true;
+}
+
+function pIdxFromColor(color) {
+  return state.players.findIndex(p => p.color === color);
+}
+
+/* ---------- i18n (FR/EN) ---------- */
+const I18N = {
+  fr: {
+    title: 'Ludo Royal', subtitle: 'Le jeu de plateau classique, réinventé avec élégance',
+    setupMode: 'Mode de jeu', local: 'Local', online: 'En Ligne',
+    playerCount: 'Nombre de joueurs', players: 'Joueurs',
+    rules: 'Règles de la partie', gameMode: 'Mode de jeu',
+    express: 'Mode Express ⚡', expressDesc: '2 pions par joueur au lieu de 4 (parties rapides)',
+    aiDifficulty: 'Difficulté de l\'IA', easy: 'Facile', normal: 'Normal', hard: 'Difficile',
+    achievements: 'Succès', resetAchievements: 'Réinitialiser les succès',
+    createRoom: 'Créer un salon', joinRoom: 'Rejoindre un salon',
+    roomCode: 'Code du salon', connectedPlayers: 'Joueurs connectés (Lobby)',
+    enterCode: 'Entrer le code du salon', yourName: 'Votre Pseudo',
+    join: 'Rejoindre le salon', spectate: 'Mode Spectateur 👁️',
+    start: 'Commencer la partie', theme: 'Thème', skin: 'Skin des pions',
+    chat: 'Chat', replay: 'Replay', music: 'Musique',
+    victory: 'Victoire !', gameOver: 'Partie terminée !',
+    rollDice: 'Lancez le dé pour commencer', noMove: 'Aucun mouvement possible avec un',
+    skipTurn: 'Trois 6 de suite : tour perdu !',
+    resume: 'Partie en cours détectée', resumeDesc: 'Reprendre là où vous vous êtes arrêté ?',
+    resumeYes: 'Reprendre', resumeNo: 'Nouvelle',
+    rejoin: 'Connexion précédente', rejoinDesc: 'Salle', rejoinYes: 'Rejoindre', rejoinNo: 'Ignorer',
+  },
+  en: {
+    title: 'Ludo Royal', subtitle: 'The classic board game, reimagined with elegance',
+    setupMode: 'Game mode', local: 'Local', online: 'Online',
+    playerCount: 'Player count', players: 'Players',
+    rules: 'Game rules', gameMode: 'Game mode',
+    express: 'Express mode ⚡', expressDesc: '2 pawns per player instead of 4 (fast games)',
+    aiDifficulty: 'AI difficulty', easy: 'Easy', normal: 'Normal', hard: 'Hard',
+    achievements: 'Achievements', resetAchievements: 'Reset achievements',
+    createRoom: 'Create a room', joinRoom: 'Join a room',
+    roomCode: 'Room code', connectedPlayers: 'Connected players (Lobby)',
+    enterCode: 'Enter room code', yourName: 'Your nickname',
+    join: 'Join the room', spectate: 'Spectator mode 👁️',
+    start: 'Start the game', theme: 'Theme', skin: 'Token skin',
+    chat: 'Chat', replay: 'Replay', music: 'Music',
+    victory: 'Victory !', gameOver: 'Game over !',
+    rollDice: 'Roll the dice to begin', noMove: 'No move possible with a',
+    skipTurn: 'Three 6 in a row : turn lost !',
+    resume: 'Game in progress detected', resumeDesc: 'Resume where you left off ?',
+    resumeYes: 'Resume', resumeNo: 'New',
+    rejoin: 'Previous connection', rejoinDesc: 'Room', rejoinYes: 'Rejoin', rejoinNo: 'Ignore',
+  }
+};
+let currentLang = localStorage.getItem('ludo-royal-lang') || 'fr';
+function t(key) { return (I18N[currentLang] && I18N[currentLang][key]) || I18N.fr[key] || key; }
+function applyI18n() {
+  document.documentElement.lang = currentLang;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    el.textContent = t(key);
+  });
+}
+function setLang(lang) {
+  currentLang = lang;
+  try { localStorage.setItem('ludo-royal-lang', lang); } catch (e) {}
+  applyI18n();
+}
+
+/* ---------- Thèmes ---------- */
+const THEMES = { dark: 'Dark', pastel: 'Pastel', neon: 'Neon', forest: 'Forest' };
+let currentTheme = localStorage.getItem('ludo-royal-theme') || 'dark';
+function setTheme(theme) {
+  currentTheme = theme;
+  try { localStorage.setItem('ludo-royal-theme', theme); } catch (e) {}
+  document.body.classList.remove('theme-dark', 'theme-pastel', 'theme-neon', 'theme-forest');
+  if (theme !== 'dark') document.body.classList.add(`theme-${theme}`);
+}
+
+/* ---------- Skins de pions ---------- */
+const TOKEN_SKINS = {
+  classic: { emojis: null },
+  emojis:  { emojis: { red: '🔴', green: '🟢', yellow: '🟡', blue: '🔵' } },
+  fruits:  { emojis: { red: '🍎', green: '🍏', yellow: '🍌', blue: '🫐' } },
+  animals: { emojis: { red: '🦁', green: '🐸', yellow: '🐝', blue: '🐳' } },
+};
+let currentSkin = localStorage.getItem('ludo-royal-skin') || 'classic';
+
+/* ---------- Musique de fond (WebAudio, sans fichiers) ---------- */
+let musicOn = false;
+let musicNodes = null;
+function startMusic() {
+  if (musicOn) return;
+  musicOn = true;
+  try {
+    const ctx = audioCtx || (audioCtx = new (window.AudioContext || window.webkitAudioContext)());
+    // Drone indien : accords de quinte + tierce mineure, oscillateurs lents
+    const freqs = [110, 165, 220, 277]; // La2, Mi3, La3, Do#4
+    const masterGain = ctx.createGain();
+    masterGain.gain.value = 0;
+    masterGain.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 2);
+    masterGain.connect(ctx.destination);
+    const oscs = freqs.map(f => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = f;
+      // LFO léger pour mouvement
+      const lfo = ctx.createOscillator();
+      const lfoG = ctx.createGain();
+      lfo.frequency.value = 0.15 + Math.random() * 0.1;
+      lfoG.gain.value = 0.3;
+      lfo.connect(lfoG).connect(o.frequency);
+      lfo.start();
+      g.gain.value = 0.4 + Math.random() * 0.2;
+      o.connect(g).connect(masterGain);
+      o.start();
+      return { o, g, lfo };
+    });
+    musicNodes = { ctx, oscs, masterGain };
+  } catch (e) { console.warn('Music init failed', e); }
+}
+function stopMusic() {
+  musicOn = false;
+  if (!musicNodes) return;
+  const { ctx, masterGain } = musicNodes;
+  try {
+    masterGain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.5);
+    setTimeout(() => {
+      musicNodes.oscs.forEach(({ o, lfo }) => { try { o.stop(); lfo.stop(); } catch (e) {} });
+      musicNodes = null;
+    }, 600);
+  } catch (e) {}
+}
+
+/* ---------- Chat intégré ---------- */
+const chat = {
+  messages: [],
+  listeners: new Set(),
+};
+function chatSend(text) {
+  if (!mp.active) return;
+  const trimmed = text.trim().slice(0, 200);
+  if (!trimmed) return;
+  const msg = { from: mp.role === 'host' ? 'Hôte' : (mp.role === 'client' ? 'Moi' : 'Spectateur'), text: trimmed, at: Date.now() };
+  chat.messages.push(msg);
+  if (chat.messages.length > 60) chat.messages.shift();
+  renderChatMessages();
+  if (mp.role === 'host') {
+    Object.values(mp.conn).forEach(conn => conn.open && conn.send({ type: 'CHAT', msg }));
+  } else if (mp.role === 'client' && mp.conn[mp.roomCode]?.open) {
+    mp.conn[mp.roomCode].send({ type: 'CHAT', msg });
+  }
+}
+function renderChatMessages() {
+  const el = $('#chat-messages');
+  if (!el) return;
+  el.innerHTML = chat.messages.slice(-20).map(m => `<div class="chat-msg"><strong>${escapeHtml(m.from)}:</strong>${escapeHtml(m.text)}</div>`).join('');
+  el.scrollTop = el.scrollHeight;
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ---------- Mode Replay (enregistrement des SYNC_STATE) ---------- */
+const replay = {
+  enabled: false,
+  history: [],
+  index: 0,
+  playing: false,
+  timer: null,
+};
+function recordState(snapshot) {
+  if (!replay.enabled) return;
+  replay.history.push(snapshot);
+  if (replay.history.length > 200) replay.history.shift();
+}
+function renderReplayFromIndex(i) {
+  const snap = replay.history[i];
+  if (!snap) return;
+  state.players = snap.players.map(p => ({ color: p.color, name: p.name, isAI: p.isAI, tokens: [...p.tokens], finishedRank: p.finishedRank }));
+  state.current = snap.current;
+  state.dice = snap.dice;
+  renderTokens(); renderPlayers();
+  $('#replay-info').textContent = `${i + 1}/${replay.history.length}`;
+}
+
+/* ---------- Telemetry anonymisée (compteurs locaux uniquement) ---------- */
+const TELEMETRY_KEY = 'ludo-royal-telemetry-v1';
+const telemetry = { gamesPlayed: 0, gamesWon: 0, totalCaptures: 0, totalRolls: 0, colorWins: { red: 0, green: 0, yellow: 0, blue: 0 } };
+function loadTelemetry() {
+  try { const raw = localStorage.getItem(TELEMETRY_KEY); if (raw) Object.assign(telemetry, JSON.parse(raw)); } catch (e) {}
+}
+function saveTelemetry() {
+  try { localStorage.setItem(TELEMETRY_KEY, JSON.stringify(telemetry)); } catch (e) {}
+}
+function recordRoll() { telemetry.totalRolls++; saveTelemetry(); }
+function recordCapture() { telemetry.totalCaptures++; saveTelemetry(); }
+function recordGameEnd(winnerColor) {
+  telemetry.gamesPlayed++;
+  if (winnerColor) { telemetry.gamesWon++; telemetry.colorWins[winnerColor] = (telemetry.colorWins[winnerColor] || 0) + 1; }
+  saveTelemetry();
+}
+
+/* ---------- Mode Express + Niveaux d'IA + Achievements + Spectateur ---------- */
+const GAME_MODES = { classic: 'classic', express: 'express' };
+let gameMode = GAME_MODES.classic; // 'classic' (4 pions) | 'express' (2 pions)
+
+const AI_LEVELS = { easy: 'easy', normal: 'normal', hard: 'hard' };
+let aiLevel = AI_LEVELS.normal;
+
+const ACHIEVEMENTS_KEY = 'ludo-royal-achievements-v1';
+const ACHIEVEMENTS = [
+  { id: 'first_move',     label: 'Premier pas',           desc: 'Déplacer votre premier pion',           icon: '👣' },
+  { id: 'first_capture',  label: 'Chasseur',              desc: 'Capturer un pion adverse',              icon: '🎯' },
+  { id: 'three_six',      label: 'Pas de chance !',       desc: 'Faire trois 6 consécutifs',            icon: '💀' },
+  { id: 'finish_one',     label: 'Premiere victoire',     desc: 'Faire arriver un pion à la maison',     icon: '🏁' },
+  { id: 'win_game',       label: 'Champion !',            desc: 'Terminer une partie en premiere place', icon: '🏆' },
+  { id: 'perfect_run',    label: 'Sans faute',            desc: 'Gagner sans avoir été capturé',         icon: '🛡️' },
+  { id: 'express_win',    label: 'Speedrunner',           desc: 'Gagner en mode Express',                icon: '⚡' },
+  { id: 'all_captures',   label: 'Annihilateur',          desc: 'Capturer les 4 pions d\'un adversaire', icon: '💥' },
+];
+const unlockedAchievements = new Set();
+
+function loadAchievements() {
+  try {
+    const raw = localStorage.getItem(ACHIEVEMENTS_KEY);
+    if (!raw) return;
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) arr.forEach(id => unlockedAchievements.add(id));
+  } catch (e) {}
+}
+function saveAchievements() {
+  try { localStorage.setItem(ACHIEVEMENTS_KEY, JSON.stringify([...unlockedAchievements])); } catch (e) {}
+}
+function unlockAchievement(id) {
+  if (unlockedAchievements.has(id)) return;
+  unlockedAchievements.add(id);
+  saveAchievements();
+  const def = ACHIEVEMENTS.find(a => a.id === id);
+  if (def) showAchievementToast(def);
+}
+function resetAchievements() {
+  unlockedAchievements.clear();
+  saveAchievements();
+}
+function showAchievementToast(def) {
+  const toast = document.createElement('div');
+  toast.className = 'achievement-toast';
+  toast.innerHTML = `<span class="ach-icon">${def.icon}</span><div><strong>Succès débloqué</strong><div>${def.label}</div></div>`;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.classList.add('show'), 50);
+  setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 400); }, 3500);
+}
+
+function aiLevelLabel(l) { return l === 'easy' ? 'Facile' : l === 'hard' ? 'Difficile' : 'Normal'; }
+
+function renderGameModes() {
+  const cfg = $('#game-mode-config');
+  if (!cfg) return;
+  const aiCfg = document.createElement('div');
+  aiCfg.style.marginTop = '12px';
+  aiCfg.innerHTML = `
+    <div class="rule-label" style="margin-bottom:8px;">Difficulté de l'IA</div>
+    <div class="ai-buttons">
+      <button class="count-btn ai-btn ${aiLevel === 'easy' ? 'active' : ''}" data-ai="easy">Facile</button>
+      <button class="count-btn ai-btn ${aiLevel === 'normal' ? 'active' : ''}" data-ai="normal">Normal</button>
+      <button class="count-btn ai-btn ${aiLevel === 'hard' ? 'active' : ''}" data-ai="hard">Difficile</button>
+    </div>`;
+  cfg.appendChild(aiCfg);
+  aiCfg.querySelectorAll('.ai-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      aiLevel = b.dataset.ai;
+      aiCfg.querySelectorAll('.ai-btn').forEach(x => x.classList.toggle('active', x === b));
+    });
+  });
+
+  // Achievements preview + reset
+  const achDiv = document.createElement('div');
+  achDiv.style.marginTop = '14px';
+  achDiv.innerHTML = `
+    <div class="rule-label" style="margin-bottom:8px;">Succès <span class="ach-count">(${unlockedAchievements.size}/${ACHIEVEMENTS.length})</span></div>
+    <div class="ach-grid">
+      ${ACHIEVEMENTS.map(a => `<div class="ach-chip ${unlockedAchievements.has(a.id) ? 'unlocked' : ''}" title="${a.desc}">${a.icon}${unlockedAchievements.has(a.id) ? '' : '?'}</div>`).join('')}
+    </div>
+    <button id="reset-achievements" class="btn-secondary" style="margin-top:8px;padding:8px;font-size:12px;width:100%;">Réinitialiser les succès</button>`;
+  cfg.appendChild(achDiv);
+  achDiv.querySelector('#reset-achievements').addEventListener('click', () => {
+    if (confirm('Réinitialiser tous les succès débloqués ?')) resetAchievements();
+    renderGameModes();
+  });
+}
+
+function renderExpressToggle() {
+  const btn = $('#toggle-express');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    gameMode = (gameMode === GAME_MODES.express) ? GAME_MODES.classic : GAME_MODES.express;
+    btn.classList.toggle('on', gameMode === GAME_MODES.express);
+    btn.setAttribute('aria-pressed', String(gameMode === GAME_MODES.express));
+  });
+}
+
+/* ---------- Mode Spectateur ---------- */
+const spectator = {
+  active: false,
+  hostConn: null,
+};
+
+function joinAsSpectator(roomCode) {
+  mp.active = true;
+  mp.role = 'spectator';
+  mp.roomCode = roomCode.toUpperCase().trim();
+  if (mp.peer) mp.peer.destroy();
+  const id = 'LUDO-SPECT-' + Math.floor(Math.random() * 100000);
+  mp.peer = new Peer(id, peerOptions);
+  mp.peer.on('open', () => {
+    const conn = mp.peer.connect(mp.roomCode);
+    mp.conn[mp.roomCode] = conn;
+    conn.on('open', () => conn.send({ type: 'SPECTATE' }));
+    conn.on('data', (data) => {
+      if (data.type === 'START_GAME') {
+        setupScreen.classList.remove('active');
+        gameScreen.classList.add('active');
+        logEl.innerHTML = '';
+        buildBoard(); createTokens(); renderPlayers();
+        log('Mode spectateur actif 👁️', true);
+        spectator.active = true;
+      } else if (data.type === 'SYNC_STATE') {
+        state.current = data.state.current;
+        state.dice = data.state.dice;
+        state.players = data.state.players.map(p => ({ color: p.color, name: p.name, isAI: p.isAI, tokens: [...p.tokens], finishedRank: p.finishedRank }));
+        state.ranking = data.state.ranking.map(c => state.players.find(p => p.color === c));
+        state.gameOver = data.state.gameOver;
+        diceFace.dataset.v = String(state.dice || 6);
+        renderTokens(); renderPlayers();
+        if (state.gameOver) showVictory(state.ranking[0]);
+      } else if (data.type === 'ANIMATE_MOVE') {
+        clientAnimateMove(data.pIdx, data.tIdx, data.dice);
+      } else if (data.type === 'ERROR') {
+        alert(data.message);
+      }
+    });
+    conn.on('close', () => { alert('Spectateur déconnecté.'); location.reload(); });
+  });
+  mp.peer.on('error', (err) => { alert('Erreur spectateur : ' + err.type); location.reload(); });
+}
+
+function renderSpectatorToggle() {
+  const btn = $('#toggle-spectator');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    btn.classList.toggle('on', !btn.classList.contains('on'));
+    btn.setAttribute('aria-pressed', String(!btn.classList.contains('on')));
+  });
+}
+
+function generateReconnectToken() {
+  const arr = new Uint8Array(8);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function saveReconnectToken(token, roomCode) {
+  try { localStorage.setItem(RECONNECT_KEY, JSON.stringify({ token, roomCode, at: Date.now() })); } catch (e) {}
+}
+
+function loadReconnectToken() {
+  try { const raw = localStorage.getItem(RECONNECT_KEY); return raw ? JSON.parse(raw) : null; }
+  catch (e) { return null; }
+}
+
+function clearReconnectToken() {
+  try { localStorage.removeItem(RECONNECT_KEY); } catch (e) {}
+}
 
 /* ---------- Éléments DOM ---------- */
 const $ = (s) => document.querySelector(s);
@@ -171,6 +711,41 @@ $('#sound-btn').addEventListener('click', () => {
   soundOn = !soundOn;
   $('#sound-on-icon').style.display = soundOn ? '' : 'none';
   $('#sound-off-icon').style.display = soundOn ? 'none' : '';
+});
+$('#music-btn').addEventListener('click', () => {
+  if (musicOn) { stopMusic(); } else { startMusic(); }
+  $('#music-on-icon').style.display = musicOn ? '' : 'none';
+  $('#music-off-icon').style.display = musicOn ? 'none' : '';
+});
+$('#lang-btn').addEventListener('click', () => {
+  setLang(currentLang === 'fr' ? 'en' : 'fr');
+  $('#lang-btn').textContent = currentLang.toUpperCase();
+  applyI18n();
+});
+$('#chat-send').addEventListener('click', () => {
+  const inp = $('#chat-input');
+  if (!inp.value.trim()) return;
+  chatSend(inp.value);
+  inp.value = '';
+});
+$('#chat-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') $('#chat-send').click(); });
+$('#replay-prev').addEventListener('click', () => {
+  if (replay.index > 0) { replay.index--; renderReplayFromIndex(replay.index); }
+});
+$('#replay-next').addEventListener('click', () => {
+  if (replay.index < replay.history.length - 1) { replay.index++; renderReplayFromIndex(replay.index); }
+});
+$('#replay-play').addEventListener('click', () => {
+  if (replay.playing) {
+    replay.playing = false;
+    clearInterval(replay.timer);
+  } else {
+    replay.playing = true;
+    replay.timer = setInterval(() => {
+      if (replay.index < replay.history.length - 1) { replay.index++; renderReplayFromIndex(replay.index); }
+      else { replay.playing = false; clearInterval(replay.timer); }
+    }, 800);
+  }
 });
 
 // --- Gestion des onglets de configuration ---
@@ -365,6 +940,7 @@ function createTokens() {
     });
   });
   renderTokens();
+  applyTokenSkin();
 }
 
 function renderTokens() {
@@ -454,16 +1030,20 @@ function startGame() {
       color: p.color,
       name: p.name,
       isAI: p.isAI,
-      tokens: [-1, -1, -1, -1],
-      finishedRank: 0
+      tokens: gameMode === GAME_MODES.express ? [-1, -1] : [-1, -1, -1, -1],
+      finishedRank: 0,
+      captures: 0,
+      wasCaptured: false,
     }));
   } else {
     state.players = COLOR_SETS[setupCount].map((color) => ({
       color,
       name: COLOR_NAMES[color],
       isAI: setupTypes[color] === 'ai',
-      tokens: [-1, -1, -1, -1],
+      tokens: gameMode === GAME_MODES.express ? [-1, -1] : [-1, -1, -1, -1],
       finishedRank: 0,
+      captures: 0,
+      wasCaptured: false,
     }));
   }
   state.current = 0;
@@ -473,6 +1053,7 @@ function startGame() {
   state.busy = false;
   state.gameOver = false;
   state.ranking = [];
+  state.totalMoves = 0;
 
   setupScreen.classList.remove('active');
   gameScreen.classList.add('active');
@@ -493,6 +1074,7 @@ function currentPlayer() {
 function beginTurn() {
   if (state.gameOver) return;
   const p = currentPlayer();
+  scheduleSave();
   state.rolled = false;
   state.dice = 0;
   turnLabel.innerHTML = `Au tour de <strong style="color: var(--${p.color})">${p.name}</strong>`;
@@ -577,6 +1159,7 @@ async function rollDice() {
   const value = 1 + Math.floor(Math.random() * 6);
   state.dice = value;
   diceFace.dataset.v = String(value);
+  recordRoll();
 
   const p = currentPlayer();
   log(`<strong>${p.name}</strong> lance le dé : <strong>${value}</strong>`);
@@ -585,8 +1168,8 @@ async function rollDice() {
     broadcastState();
   }
 
-  // règle des trois 6 consécutifs
-  if (value === 6) {
+  // règle des trois 6 consécutifs (si activée)
+  if (value === 6 && rules.threeSixPenalty) {
     state.sixCount++;
     if (state.sixCount === 3) {
       log(`${p.name} a fait trois 6 de suite — tour perdu !`);
@@ -636,7 +1219,12 @@ function getMovableTokens(pIdx, dice) {
   p.tokens.forEach((pos, tIdx) => {
     if (pos === FINISH_POS) return;
     if (pos === -1) {
-      if (dice === 6) res.push(tIdx);
+      if (!rules.requireSixToExit) {
+        // Variante : tout dé permet de sortir
+        res.push(tIdx);
+      } else if (dice === 6) {
+        res.push(tIdx);
+      }
     } else if (pos + dice <= FINISH_POS) {
       res.push(tIdx);
     }
@@ -690,16 +1278,16 @@ async function moveToken(pIdx, tIdx) {
   }
 
   if (p.tokens[tIdx] === -1) {
-    // sortie de base
     p.tokens[tIdx] = 0;
     sfx.out();
     el.classList.add('hop');
     renderTokens();
     log(`<strong>${p.name}</strong> sort un pion de sa base`);
+    unlockAchievement('first_move');
+    state.totalMoves++;
     await sleep(320);
     el.classList.remove('hop');
   } else {
-    // avancer case par case
     for (let s = 0; s < dice; s++) {
       p.tokens[tIdx]++;
       sfx.step();
@@ -708,28 +1296,41 @@ async function moveToken(pIdx, tIdx) {
       await sleep(230);
       el.classList.remove('hop');
     }
+    state.totalMoves++;
+    unlockAchievement('first_move');
   }
 
   const newPos = p.tokens[tIdx];
 
-  // Capture ?
-  if (newPos >= 0 && newPos <= 50) {
+  // Capture ? (si règle activée)
+  if (rules.captureEnabled && newPos >= 0 && newPos <= 50) {
     const cell = absCell(p.color, newPos);
-    if (!SAFE_CELLS.has(cell)) {
+    const isSafe = rules.safeCellsActive && SAFE_CELLS.has(cell);
+    if (!isSafe) {
+      let oppCapturedCount = 0;
       for (let oi = 0; oi < state.players.length; oi++) {
         if (oi === pIdx) continue;
         const opp = state.players[oi];
         opp.tokens.forEach((opos, otIdx) => {
           if (opos >= 0 && opos <= 50 && absCell(opp.color, opos) === cell) {
             opp.tokens[otIdx] = -1;
+            opp.wasCaptured = true;
+            oppCapturedCount++;
             const oel = document.getElementById(tokenId(oi, otIdx));
-            oel.classList.add('captured-anim');
-            setTimeout(() => oel.classList.remove('captured-anim'), 520);
+            if (oel) {
+              oel.classList.add('captured-anim');
+              setTimeout(() => oel.classList.remove('captured-anim'), 520);
+            }
             log(`<strong>${p.name}</strong> capture un pion de <strong>${opp.name}</strong> !`, true);
             sfx.capture();
-            extraTurn = true;
+            if (rules.extraTurnOnCapture) extraTurn = true;
           }
         });
+      }
+      if (oppCapturedCount > 0) {
+        p.captures = (p.captures || 0) + oppCapturedCount;
+        unlockAchievement('first_capture');
+        if (p.captures === 4) unlockAchievement('all_captures');
       }
       renderTokens();
     }
@@ -739,7 +1340,9 @@ async function moveToken(pIdx, tIdx) {
   if (newPos === FINISH_POS) {
     sfx.finish();
     log(`<strong>${p.name}</strong> amène un pion à la maison !`, true);
-    extraTurn = true;
+    if (rules.extraTurnOnFinish) extraTurn = true;
+    unlockAchievement('finish_one');
+    if (gameMode === GAME_MODES.express) unlockAchievement('express_win');
 
     if (p.tokens.every((t) => t === FINISH_POS)) {
       p.finishedRank = state.ranking.length + 1;
@@ -759,6 +1362,8 @@ async function moveToken(pIdx, tIdx) {
       showVictory(p);
       if (mp.active && mp.role === 'host') broadcastState();
       state.busy = false;
+      if (p.finishedRank === 1) unlockAchievement('win_game');
+      if (!p.wasCaptured && !p.isAI) unlockAchievement('perfect_run');
       return;
     }
   }
@@ -766,45 +1371,50 @@ async function moveToken(pIdx, tIdx) {
   renderPlayers();
   if (mp.active && mp.role === 'host') broadcastState();
   state.busy = false;
+  scheduleSave();
   await sleep(250);
   nextTurn(extraTurn);
 }
 
 /* ==================== IA ==================== */
-function aiChooseMove(pIdx, dice, movable) {
+function aiChooseMoveEasy(pIdx, dice, movable) {
   const p = state.players[pIdx];
   let best = movable[0];
   let bestScore = -Infinity;
-
   movable.forEach((tIdx) => {
     const pos = p.tokens[tIdx];
     const newPos = pos === -1 ? 0 : pos + dice;
     let score = 0;
+    if (newPos === FINISH_POS) score += 60;
+    else if (newPos >= 51) score += 25;
+    if (pos === -1) score += 15;
+    score += (pos === -1 ? 0 : pos) * 0.2;
+    score += Math.random() * 12; // beaucoup d'aléa
+    if (score > bestScore) { bestScore = score; best = tIdx; }
+  });
+  return best;
+}
 
-    // terminer un pion
+function aiChooseMoveNormal(pIdx, dice, movable) {
+  const p = state.players[pIdx];
+  let best = movable[0];
+  let bestScore = -Infinity;
+  movable.forEach((tIdx) => {
+    const pos = p.tokens[tIdx];
+    const newPos = pos === -1 ? 0 : pos + dice;
+    let score = 0;
     if (newPos === FINISH_POS) score += 120;
-    // entrer dans la colonne d'arrivée
     else if (newPos >= 51) score += 55;
-
-    // sortir de base
     if (pos === -1) score += 45;
-
     if (newPos >= 0 && newPos <= 50) {
       const cell = absCell(p.color, newPos);
-      // capture possible
       if (!SAFE_CELLS.has(cell)) {
         for (let oi = 0; oi < state.players.length; oi++) {
           if (oi === pIdx) continue;
           const opp = state.players[oi];
-          if (opp.tokens.some((op) => op >= 0 && op <= 50 && absCell(opp.color, op) === cell)) {
-            score += 90;
-          }
+          if (opp.tokens.some((op) => op >= 0 && op <= 50 && absCell(opp.color, op) === cell)) score += 90;
         }
-      } else {
-        score += 25; // atterrir sur une case sûre
-      }
-
-      // danger : un adversaire à 1-6 cases derrière la nouvelle position
+      } else score += 25;
       for (let oi = 0; oi < state.players.length; oi++) {
         if (oi === pIdx) continue;
         const opp = state.players[oi];
@@ -817,16 +1427,62 @@ function aiChooseMove(pIdx, dice, movable) {
         });
       }
     }
-
-    // préférer avancer le pion le plus proche de l'arrivée
     score += (pos === -1 ? 0 : pos) * 0.4;
-    // léger aléa pour varier le jeu
     score += Math.random() * 4;
-
     if (score > bestScore) { bestScore = score; best = tIdx; }
   });
-
   return best;
+}
+
+function aiChooseMoveHard(pIdx, dice, movable) {
+  // Heuristique normale + simulation 1 coup d'avance pour évaluer le danger réel
+  const p = state.players[pIdx];
+  let best = movable[0];
+  let bestScore = -Infinity;
+  movable.forEach((tIdx) => {
+    const pos = p.tokens[tIdx];
+    const newPos = pos === -1 ? 0 : pos + dice;
+    let score = 0;
+    if (newPos === FINISH_POS) score += 150;
+    else if (newPos >= 51) score += 70;
+    if (pos === -1) score += 60;
+    if (newPos >= 0 && newPos <= 50) {
+      const cell = absCell(p.color, newPos);
+      const isSafe = rules.safeCellsActive && SAFE_CELLS.has(cell);
+      // Capture imminente (cases adverses à portée 1-6)
+      let oppCapturesUs = 0;
+      let weCaptureOpp = 0;
+      for (let oi = 0; oi < state.players.length; oi++) {
+        if (oi === pIdx) continue;
+        const opp = state.players[oi];
+        opp.tokens.forEach((op) => {
+          if (op < 0 || op > 50) return;
+          const oc = absCell(opp.color, op);
+          const distFromOpp = (cell - oc + 52) % 52;
+          const distToOpp = (oc - cell + 52) % 52;
+          if (distFromOpp >= 1 && distFromOpp <= 6 && !isSafe) oppCapturesUs++;
+          if (distToOpp === 0 && !isSafe) weCaptureOpp++;
+        });
+      }
+      score += weCaptureOpp * 110;
+      score -= oppCapturesUs * 35;
+      if (isSafe) score += 40;
+    }
+    // Simuler la position des autres pions si on bouge celui-ci
+    const simTokens = p.tokens.map((t, i) => i === tIdx ? newPos : t);
+    const tokensOnBoard = simTokens.filter(t => t >= 0 && t <= 50).length;
+    score += tokensOnBoard * 2;
+    // Léger aléa pour la variété
+    score += Math.random() * 2;
+    if (score > bestScore) { bestScore = score; best = tIdx; }
+  });
+  return best;
+}
+
+function aiChooseMove(pIdx, dice, movable) {
+  if (aiLevel === AI_LEVELS.easy) return aiChooseMoveEasy(pIdx, dice, movable);
+  if (aiLevel === AI_LEVELS.hard) return aiChooseMoveHard(pIdx, dice, movable);
+  return aiChooseMoveNormal(pIdx, dice, movable);
 }
 
 /* ==================== VICTOIRE ==================== */
@@ -923,6 +1579,22 @@ function initHost() {
   });
 }
 
+// --- Reconnexion multi ---
+// Quand un client rejoint, l'hôte lui attribue un reconnectToken.
+// Si ce client perd la connexion et revient plus tard avec le même token,
+// il reprend sa place exacte (couleur, état) sans réinitialiser la partie.
+function issueReconnectToken(peerId, color) {
+  const token = generateReconnectToken();
+  mp.reconnectTokens[token] = { peerId, color, issuedAt: Date.now() };
+  return token;
+}
+
+function findPlayerByReconnectToken(token) {
+  if (!mp.reconnectTokens[token]) return null;
+  const entry = mp.reconnectTokens[token];
+  return mp.players.find(p => p.color === entry.color) || null;
+}
+
 function fillLobbySlotsWithAI() {
   const activeColors = COLOR_SETS[setupCount];
   // Conserver les joueurs humains déjà connectés
@@ -1002,7 +1674,28 @@ function broadcastState() {
 
 function handleHostMessage(conn, data) {
   if (data.type === 'JOIN') {
-    // Trouver le premier emplacement IA disponible pour le remplacer
+    // 1) Tentative de reconnexion par token persistant
+    if (data.reconnectToken && mp.reconnectTokens[data.reconnectToken]) {
+      const entry = mp.reconnectTokens[data.reconnectToken];
+      const existingSlot = mp.players.find(p => p.color === entry.color);
+      if (existingSlot) {
+        conn.color = entry.color;
+        conn.playerName = existingSlot.name;
+        conn.reconnectToken = data.reconnectToken;
+        mp.conn[conn.peer] = conn;
+        existingSlot.peerId = conn.peer;
+        existingSlot.connected = true;
+        if (state.players[pIdxFromColor(entry.color)]) {
+          state.players[pIdxFromColor(entry.color)].isAI = false;
+        }
+        log(`<strong>${conn.playerName}</strong> s'est reconnecté !`, true);
+        conn.send({ type: 'JOIN_OK', color: entry.color, reconnectToken: data.reconnectToken, reconnected: true });
+        if (gameScreen.classList.contains('active')) broadcastState();
+        return;
+      }
+    }
+
+    // 2) Sinon, rejoindre un slot IA libre
     const nextAiSlot = mp.players.find(p => p.isAI);
     if (!nextAiSlot) {
       conn.send({ type: 'ERROR', message: 'Le salon est complet.' });
@@ -1010,12 +1703,11 @@ function handleHostMessage(conn, data) {
       return;
     }
 
-    // Assigner la couleur et configurer la connexion
     conn.color = nextAiSlot.color;
     conn.playerName = data.name || `Joueur ${COLOR_NAMES[conn.color]}`;
+    conn.reconnectToken = issueReconnectToken(conn.peer, conn.color);
     mp.conn[conn.peer] = conn;
 
-    // Mettre à jour l'entrée dans le lobby
     nextAiSlot.peerId = conn.peer;
     nextAiSlot.name = conn.playerName;
     nextAiSlot.isAI = false;
@@ -1024,6 +1716,7 @@ function handleHostMessage(conn, data) {
     log(`<strong>${conn.playerName}</strong> a rejoint le salon !`, true);
     updateHostLobbyUI();
     broadcastLobby();
+    conn.send({ type: 'JOIN_OK', color: conn.color, reconnectToken: conn.reconnectToken });
   }
 
   if (data.type === 'ROLL_DICE') {
@@ -1105,7 +1798,9 @@ function initClient(roomCode, name) {
 
     conn.on('open', () => {
       log(`Connecté ! Envoi des informations d'inscription...`);
-      conn.send({ type: 'JOIN', name: name });
+      const saved = loadReconnectToken();
+      const reconnectToken = (saved && saved.roomCode === mp.roomCode) ? saved.token : null;
+      conn.send({ type: 'JOIN', name: name, reconnectToken });
     });
 
     conn.on('data', (data) => handleClientMessage(data));
@@ -1133,6 +1828,16 @@ function handleClientMessage(data) {
   if (data.type === 'ERROR') {
     alert(data.message);
     location.reload();
+  }
+
+  if (data.type === 'JOIN_OK') {
+    mp.myColor = data.color;
+    mp.myReconnectToken = data.reconnectToken;
+    if (data.reconnectToken) {
+      saveReconnectToken(data.reconnectToken, mp.roomCode);
+      log(`Connecté en tant que <strong>${COLOR_NAMES[data.color]}</strong>${data.reconnected ? ' (reconnecté)' : ''}.`, true);
+    }
+    return;
   }
 
   if (data.type === 'ROOM_UPDATE') {
@@ -1187,12 +1892,18 @@ function handleClientMessage(data) {
 
     renderTokens();
     renderPlayers();
-    updateOnlineControls();
+    if (mp.role !== 'spectator') updateOnlineControls();
 
     if (state.gameOver) {
       const winner = state.ranking[0];
       showVictory(winner);
     }
+  }
+
+  if (data.type === 'CHAT') {
+    chat.messages.push(data.msg);
+    if (chat.messages.length > 60) chat.messages.shift();
+    renderChatMessages();
   }
 }
 
@@ -1380,7 +2091,243 @@ function checkUrlParams() {
   }
 }
 
+/* ==================== PICKERS (Thème / Skin / Lang) ==================== */
+function renderPersonalization() {
+  const card = document.querySelector('.setup-card');
+  if (!card) return;
+  let div = document.getElementById('personalization-config');
+  if (!div) {
+    div = document.createElement('div');
+    div.id = 'personalization-config';
+    div.className = 'setup-section';
+    div.innerHTML = `
+      <h2>Personnalisation</h2>
+      <div class="rule-label" style="margin-bottom:6px;" data-i18n="theme">Thème</div>
+      <div id="theme-buttons" class="count-buttons" style="margin-bottom:12px;"></div>
+      <div class="rule-label" style="margin-bottom:6px;" data-i18n="skin">Skin des pions</div>
+      <div id="skin-buttons" class="count-buttons"></div>`;
+    card.insertBefore(div, card.querySelector('#start-btn'));
+  }
+  const themeBtns = div.querySelector('#theme-buttons');
+  themeBtns.innerHTML = '';
+  Object.entries(THEMES).forEach(([key, label]) => {
+    const b = document.createElement('button');
+    b.className = 'count-btn' + (currentTheme === key ? ' active' : '');
+    b.textContent = label;
+    b.addEventListener('click', () => {
+      setTheme(key);
+      themeBtns.querySelectorAll('.count-btn').forEach(x => x.classList.toggle('active', x === b));
+    });
+    themeBtns.appendChild(b);
+  });
+  const skinBtns = div.querySelector('#skin-buttons');
+  skinBtns.innerHTML = '';
+  const skinLabels = { classic: 'Classique', emojis: 'Émojis', fruits: 'Fruits', animals: 'Animaux' };
+  Object.entries(TOKEN_SKINS).forEach(([key]) => {
+    const b = document.createElement('button');
+    b.className = 'count-btn' + (currentSkin === key ? ' active' : '');
+    b.textContent = skinLabels[key] || key;
+    b.addEventListener('click', () => {
+      currentSkin = key;
+      try { localStorage.setItem('ludo-royal-skin', key); } catch (e) {}
+      skinBtns.querySelectorAll('.count-btn').forEach(x => x.classList.toggle('active', x === b));
+      if (gameScreen.classList.contains('active')) applyTokenSkin();
+    });
+    skinBtns.appendChild(b);
+  });
+}
+
+function applyTokenSkin() {
+  const skin = TOKEN_SKINS[currentSkin];
+  document.querySelectorAll('.token').forEach(el => {
+    el.classList.remove('skin-emojis', 'skin-fruits', 'skin-animals');
+    if (currentSkin !== 'classic' && skin && skin.emojis) {
+      const color = el.classList.contains('red') ? 'red' : el.classList.contains('green') ? 'green' : el.classList.contains('yellow') ? 'yellow' : 'blue';
+      el.classList.add('skin-' + currentSkin);
+      el.setAttribute('data-emoji', skin.emojis[color]);
+    } else {
+      el.removeAttribute('data-emoji');
+    }
+  });
+}
+
+/* ==================== PWA Install Prompt ==================== */
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  // Afficher la bannière après 3s si pas encore installée
+  setTimeout(() => {
+    const dismissed = localStorage.getItem('ludo-royal-pwa-dismissed');
+    if (!dismissed) $('#pwa-install').classList.add('show');
+  }, 3000);
+});
+
+$('#pwa-install-yes').addEventListener('click', async () => {
+  if (!deferredInstallPrompt) return;
+  $('#pwa-install').classList.remove('show');
+  deferredInstallPrompt.prompt();
+  const { outcome } = await deferredInstallPrompt.userChoice;
+  if (outcome === 'accepted') localStorage.setItem('ludo-royal-pwa-dismissed', '1');
+  deferredInstallPrompt = null;
+});
+
+$('#pwa-install-no').addEventListener('click', () => {
+  $('#pwa-install').classList.remove('show');
+  localStorage.setItem('ludo-royal-pwa-dismissed', '1');
+});
+
+window.addEventListener('appinstalled', () => {
+  $('#pwa-install').classList.remove('show');
+  log('Application installée avec succès !', true);
+});
+
+/* ==================== Network Status Indicator ==================== */
+function updateNetworkStatus() {
+  const el = $('#network-status');
+  if (!el) return;
+  const online = navigator.onLine;
+  el.classList.toggle('online', online);
+  el.classList.toggle('offline', !online);
+  el.querySelector('.status-text').textContent = online ? 'En ligne' : 'Hors ligne';
+}
+window.addEventListener('online', updateNetworkStatus);
+window.addEventListener('offline', updateNetworkStatus);
+updateNetworkStatus();
+
+/* ==================== Error Boundary Globale ==================== */
+function showError(message) {
+  const overlay = $('#error-overlay');
+  if (!overlay) return;
+  $('#error-message').textContent = message;
+  overlay.classList.add('show');
+}
+$('#error-reload').addEventListener('click', () => location.reload());
+$('#error-dismiss').addEventListener('click', () => $('#error-overlay').classList.remove('show'));
+window.addEventListener('error', (e) => {
+  console.error('Global error:', e.error);
+  showError(e.message || 'Erreur inattendue');
+});
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('Unhandled rejection:', e.reason);
+  showError(String(e.reason?.message || e.reason || 'Promesse rejetée'));
+});
+
+/* ==================== Accessibilité clavier ==================== */
+document.addEventListener('keydown', (e) => {
+  // Désactiver en mode spectateur ou si game inactif
+  if (!gameScreen.classList.contains('active')) return;
+  if (state.busy || state.gameOver) return;
+
+  const p = currentPlayer();
+  if (!p || p.isAI) return;
+
+  // Espace/Enter : lancer le dé
+  if ((e.code === 'Space' || e.key === ' ') && !state.rolled && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    if (!diceBtn.disabled) rollDice();
+  }
+
+  // Touches flèches pour sélectionner un pion movable
+  if (state.rolled && document.activeElement.tagName !== 'INPUT') {
+    const movable = getMovableTokens(state.current, state.dice);
+    if (movable.length === 0) return;
+    const selected = movable.findIndex(tIdx => {
+      const el = document.getElementById(tokenId(state.current, tIdx));
+      return el && document.activeElement === el;
+    });
+    if (e.code === 'ArrowRight' || e.code === 'ArrowDown') {
+      e.preventDefault();
+      const next = movable[(selected + 1) % movable.length];
+      document.getElementById(tokenId(state.current, next))?.focus();
+    } else if (e.code === 'ArrowLeft' || e.code === 'ArrowUp') {
+      e.preventDefault();
+      const prev = movable[(selected - 1 + movable.length) % movable.length];
+      document.getElementById(tokenId(state.current, prev))?.focus();
+    } else if (e.code === 'Enter' && selected >= 0) {
+      e.preventDefault();
+      moveToken(state.current, movable[selected]);
+    }
+  }
+
+  // M : toggle musique
+  if (e.key === 'm' && document.activeElement.tagName !== 'INPUT') {
+    $('#music-btn').click();
+  }
+  // S : toggle son
+  if (e.key === 's' && document.activeElement.tagName !== 'INPUT') {
+    $('#sound-btn').click();
+  }
+  // Échap : fermer modale/menu
+  if (e.key === 'Escape') {
+    if ($('#error-overlay').classList.contains('show')) $('#error-overlay').classList.remove('show');
+    else if ($('#victory-modal').classList.contains('show') && !state.gameOver) {
+      $('#victory-modal').classList.remove('show');
+      nextTurn(false);
+    }
+  }
+});
+
+/* ==================== Performance: raf pour renderTokens ==================== */
+const perf = {
+  rafId: null,
+  pendingRender: false,
+};
+function requestRenderTokens() {
+  if (perf.pendingRender) return;
+  perf.pendingRender = true;
+  perf.rafId = requestAnimationFrame(() => {
+    perf.pendingRender = false;
+    renderTokensImmediate();
+  });
+}
+function renderTokensImmediate() {
+  // Code original de renderTokens déplacé ici
+  if (document.querySelectorAll('.token').length === 0 && state.players.length > 0) {
+    createTokens();
+    return;
+  }
+  const groups = {};
+  state.players.forEach((p, pIdx) => {
+    p.tokens.forEach((pos, tIdx) => {
+      const [r, c] = coordFor(p.color, pos, tIdx);
+      const key = pos === -1 ? `base-${pIdx}-${tIdx}` : `${r},${c}`;
+      (groups[key] = groups[key] || []).push({ pIdx, tIdx, r, c, pos });
+    });
+  });
+  Object.values(groups).forEach((items) => {
+    items.forEach(({ pIdx, tIdx, r, c, pos }, i) => {
+      const el = document.getElementById(tokenId(pIdx, tIdx));
+      if (!el) return;
+      const [or, oc] = items.length > 1 ? STACK_OFFSETS[Math.min(i, 4)] : [0, 0];
+      el.style.top = `${((r + 0.11 + or) / 15) * 100}%`;
+      el.style.left = `${((c + 0.11 + oc) / 15) * 100}%`;
+      el.classList.toggle('finished', pos === FINISH_POS);
+    });
+  });
+}
+// Garde compatibilité avec le code existant qui appelle renderTokens()
+window.renderTokens = renderTokensImmediate;
+
 /* ==================== INIT ==================== */
+loadAchievements();
+loadTelemetry();
+setTheme(currentTheme);
+applyI18n();
 initShakeDetection();
 renderSetup();
+renderRules();
+renderGameModes();
+renderExpressToggle();
+renderSpectatorToggle();
+renderPersonalization();
+renderResumeBanner();
 checkUrlParams();
+
+const langBtnInit = $('#lang-btn');
+if (langBtnInit) langBtnInit.textContent = currentLang.toUpperCase();
+
+// Forcer la position initiale des pions si mode express
+if (gameMode === GAME_MODES.express && state.players.length > 0) {
+  state.players.forEach(p => p.tokens = [-1, -1]);
+}
