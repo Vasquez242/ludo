@@ -51,30 +51,42 @@
 
 ### Proposition de valeur
 
-> **Rejouer au Ludo** — le classique jeu de plateau indien — **directement dans le navigateur**, sans installation, sans compte, sans connexion multijoueur (IA uniquement). Premium visuel (thème sombre, dorures, verre dépoli, animé), jouable seul contre jusqu'à 3 IA, en français.
+> **Rejouer au Ludo** — le classique jeu de plateau indien — **directement dans le navigateur**, **installable** comme une app native, **multijoueur P2P** par code de salon, avec IA adaptable, achievements, chat, 4 thèmes, 4 skins, et 8 succès débloquables. Premium visuel (thème sombre, dorures, verre dépoli, animations), jouable en FR ou EN, hors ligne.
 
 ### Problèmes résolus
 
 - Jouer au Ludo sans plateau physique ni partenaire disponible.
 - Découvrir ou redécouvrir les règles du Ludo sans tutoriel complexe.
-- Offrir une alternative moderne et esthétique aux implémentations vieillissantes.
+- **Sauvegarder** une partie en cours et la reprendre après un crash/refresh.
+- **Reconnecter** un client multi après une perte réseau (jeton persistant).
+- Jouer à **plusieurs à distance** sans serveur applicatif (P2P décentralisé).
+- **Installer** le jeu sur mobile (PWA iOS/Android).
+- **Adapter** les règles (Express, captures, cases sûres, 3 six…).
+- Progresser via un système d'**achievements** et de **télémétrie** locale.
 
 ### Périmètre (in/out)
 
 **Inclus :**
-- Jeu complet Ludo 2–4 joueurs, règles classiques.
-- IA adversaire avec heuristique de score.
-- Effets sonores synthétiques (WebAudio, sans fichiers externes).
+- Jeu complet Ludo 2–4 joueurs, règles classiques paramétrables.
+- IA adversaire 3 niveaux (Facile/Normal/Difficile).
+- Effets sonores synthétiques + musique de fond générée (WebAudio, 0 fichier externe).
 - Animations, confettis, modale de victoire.
-- Thème sombre premium + adaptation auto (préférence système).
-- Bascule son on/off.
+- Multijoueur P2P décentralisé (PeerJS) avec reconnexion automatique.
+- Chat intégré en multi, mode Spectateur.
+- Mode Express (2 pions), 6 règles configurables.
+- 8 achievements débloquables + télémétrie locale.
+- 4 thèmes (Dark/Pastel/Neon/Forest), 4 skins de pions, 2 langues (FR/EN).
+- Replay des parties.
+- PWA installable iOS/Android avec splash screen + manifest + SW v2.
+- Persistance LocalStorage (auto-save + restauration + reconnexion).
+- Accessibilité clavier complète (Space/Enter/flèches/M/S/Esc).
 
 **Exclus :**
-- Multijoueur en ligne / réseau.
-- Comptes utilisateurs, profils, historique.
-- Persistance de partie (LocalStorage non utilisé).
-- Multilangue (UI figée en français).
-- Application mobile native.
+- Multijoueur avec serveur centralisé (tournois, classements mondiaux).
+- Comptes utilisateurs / profils cloud.
+- Base de données distante.
+- Application mobile native (App Store / Google Play).
+- Paiement intégré / monétisation.
 
 ---
 
@@ -139,8 +151,12 @@ graph TD
 - **Front-end unique** : HTML/CSS/JS vanilla (aucun framework côté jeu).
 - **Shell Next.js** : sert `/` (redirect) et les assets statiques.
 - **Pas de back-end**, pas de SSR dynamique, pas de base de données.
-- **Audio** : Web Audio API (`AudioContext`), oscillateurs synthétiques — pas de fichiers MP3.
-- **Analytics** : `@vercel/analytics/next` activé **uniquement en production**.
+- **Multijoueur P2P** : WebRTC via PeerJS (CDN), broker public `0.peerjs.com` pour le signaling uniquement.
+- **Persistance** : LocalStorage 100% côté client (auto-save debounced 400ms).
+- **Audio** : Web Audio API (`AudioContext`), oscillateurs synthétiques — pas de fichiers MP3, musique drone indien générée (4 oscillateurs + LFOs).
+- **Analytics** : `@vercel/analytics/next` activé **uniquement en production** (côté serveur).
+- **PWA** : Service Worker v2 (`network-first` HTML / `cache-first` assets), `manifest.json` enrichi, splash screen SVG iOS.
+- **Télémétrie** : 100% locale (LocalStorage `ludo-royal-telemetry-v1`), aucune remontée réseau.
 
 ### 2.4 Architecture réseau
 
@@ -181,8 +197,8 @@ graph TD
 | **React** | ^19 | Rendu du shell et des composants UI shadcn | Écosystème, compatibilité Next.js | Solid, Vue |
 | **TypeScript** | 5.7.3 | Typage statique du shell et des composants | Sécurité de typage sur le shell | JavaScript pur |
 | **Tailwind CSS** | ^4.2.0 | Styling du shell (non utilisé par le jeu) | Convention shadcn/ui | CSS modules, vanilla CSS |
-| **shadcn/ui** | ^4.8.0 | Système de composants (scaffold) | Convention UI populaire | Radix UI direct, MUI |
-| **@base-ui/react** | ^1.5.0 | Primitive `<Button>` du shadcn Button | Base accessible | Radix UI primitives |
+| **shadcn/ui** | ^4.8.0 | Système de composants (scaffold — non utilisé) | Convention UI populaire | Radix UI direct, MUI |
+| **@base-ui/react** | ^1.5.0 | Primitive `<Button>` du shadcn Button (non utilisé) | Base accessible | Radix UI primitives |
 | **class-variance-authority** | ^0.7.1 | Variants du Button | API Tailwind ergonomique | CLSX seul |
 | **clsx** | ^2.1.1 | Composition de classes | Standard shadcn | classnames |
 | **tailwind-merge** | ^3.3.1 | Fusion intelligente classes Tailwind | Résolution conflits | — |
@@ -190,10 +206,13 @@ graph TD
 | **@vercel/analytics** | 1.6.1 | Télémétrie production | Insights gratuits | Plausible, Umami |
 | **tw-animate-css** | ^1.4.0 | Animations Tailwind | — | — |
 | **HTML/CSS/JS Vanilla** | ES2022 | **Le jeu lui-même** | Zéro build, zéro dépendance, simplicité | — |
-| **Web Audio API** | Native | Effets sonores | Pas de fichiers externes | Howler.js, Tone.js |
+| **Web Audio API** | Native | Effets sonores + musique de fond générée | Pas de fichiers externes | Howler.js, Tone.js |
+| **PeerJS** | ^1.5.4 (CDN) | Multijoueur P2P décentralisé | Aucun serveur requis, public broker 0.peerjs.com | WebRTC direct, Socket.io |
+| **Service Worker** | Native | PWA offline, cache-first assets | Standard web, installable iOS/Android | Workbox |
 | **Netlify** | OpenNext | Hébergement & build | Config minimale | Vercel, Cloudflare Pages |
+| **Crypto.getRandomValues** | Native | Jetons de reconnexion sécurisés | Standard web, aucun dépendance | uuid.js |
 
-**Remarque** : le projet inclut **deux lockfiles** (`package-lock.json` + `pnpm-lock.yaml`) ; `netlify.toml` utilise `pnpm build`. Cohérence à vérifier (cf. §17 Dette technique).
+**Remarque** : `package-lock.json` supprimé pour éviter la confusion avec `pnpm-lock.yaml` utilisé par Netlify. Seule la dépendance `peerjs` est chargée via CDN (avec SRI SHA-384 pour intégrité).
 
 ---
 
@@ -215,26 +234,31 @@ ludo/
 │   └── utils.ts                  # cn(...inputs) : twMerge(clsx(...))
 ├── ludo02/                       # Répertoire vide — ancien submodule orphelin retiré
 ├── public/                       # Assets statiques servis tels quels
-│   ├── apple-icon.png            # Icône Apple touch
+│   ├── apple-icon.png            # Icône Apple touch (180×180)
 │   ├── icon-dark-32x32.png       # Favicon dark
 │   ├── icon-light-32x32.png      # Favicon light
 │   ├── icon.svg                  # Favicon SVG
-│   ├── ludo.css                  # Styles du jeu (plateau, pions, dés, modale)
-│   ├── ludo.html                 # Markup du jeu (3 écrans : setup, game, victory)
-│   ├── ludo.js                   # Moteur du jeu (logique Ludo complète)
+│   ├── ludo.css                  # Styles du jeu (plateau, pions, thèmes, chat, replay…)
+│   ├── ludo.html                 # Markup du jeu (3 écrans + chat + replay + install + erreur)
+│   ├── ludo.js                   # Moteur du jeu (logique + i18n + IA + chat + replay + telemetry)
+│   ├── manifest.json             # PWA manifest (icônes 32/180, maskable, categories)
+│   ├── splash.svg                # Splash screen iOS (1024×1366 vectoriel)
+│   ├── sw.js                     # Service Worker v2 (network-first HTML, cache-first assets)
 │   ├── placeholder.jpg           # (scaffold v0)
 │   ├── placeholder-logo.png      # (scaffold v0)
+│   ├── placeholder-logo.svg      # (scaffold v0)
+│   ├── placeholder-user.jpg      # (scaffold v0)
 │   └── placeholder.svg           # (scaffold v0)
 ├── .gitignore                    # Ignore node_modules, .next, .env*.local
 ├── components.json               # Config shadcn (style base-nova, baseColor neutral)
 ├── next-env.d.ts                 # Types Next.js (auto-générés)
 ├── next.config.mjs               # ignoreBuildErrors + images.unoptimized
 ├── netlify.toml                  # Config déploiement Netlify (pnpm build)
-├── package.json                  # Dépendances npm
-├── package-lock.json             # Lock npm (résidu d'install antérieure ?)
-├── pnpm-lock.yaml                # Lock pnpm (réellement utilisé pour build)
+├── package.json                  # Dépendances (peerjs chargé via CDN)
+├── pnpm-lock.yaml                # Lock pnpm (utilisé pour build)
 ├── postcss.config.mjs            # Plugin Tailwind PostCSS
 ├── README.md                     # "# ludo" — quasi vide (scaffold v0)
+├── CONTEXTE.md                   # Documentation officielle (ce fichier)
 └── tsconfig.json                 # Config TypeScript + paths "@/*"
 ```
 
@@ -395,6 +419,111 @@ sequenceDiagram
 - **Limite** : 40 entrées max, FIFO (les plus anciens sont supprimés).
 - **Affichage** : prepend (les plus récents en haut).
 - **Types** : standard (couleur `text-dim`) ou doré (`.gold`).
+
+### 5.11 Persistance LocalStorage (Prio 1)
+
+- **Objectif** : sauvegarder la partie en cours toutes les 400 ms (debounce) et la restaurer au rechargement.
+- **Clé** : `ludo-royal-state-v1` → sérialise `{ version, savedAt, state, rules, setupCount, setupTypes }`.
+- **Bannière** : sur l'écran d'accueil, si une partie non terminée est détectée, affichage d'une bannière dorée "Partie en cours détectée" avec boutons **Reprendre** / **Nouvelle**.
+- **Fonction** : `scheduleSave()` déclenchée à chaque mutation (beginTurn, fin de moveToken).
+
+### 5.12 Reconnexion multi par jeton persistant (Prio 1)
+
+- **Objectif** : permettre à un client ayant perdu la connexion de reprendre sa **couleur exacte** sans réinitialiser la partie.
+- **Mécanisme** :
+  - L'hôte génère un `crypto.getRandomValues(8 octets hex)` à chaque nouveau client.
+  - Le client sauvegarde ce token en `ludo-royal-reconnect-v1` lié au `roomCode`.
+  - À la reconnexion, le client envoie son token ; l'hôte le reconnaît, restaure la couleur et l'état `isAI = false`.
+- **Bannière** : sur l'écran d'accueil, si un token de salon existe, proposition de rejoindre automatiquement.
+
+### 5.13 Règles paramétrables (Prio 1)
+
+6 toggles disponibles dans `#rules-config` :
+| ID | Label | Intégration moteur |
+|---|---|---|
+| `requireSixToExit` | 6 obligatoire pour sortir | `getMovableTokens()` |
+| `captureEnabled` | Captures activées | Bloc capture `moveToken()` |
+| `threeSixPenalty` | 3 six = tour perdu | `rollDice()` |
+| `extraTurnOnCapture` | Gain de tour (capture) | `extraTurn = true` conditionnel |
+| `extraTurnOnFinish` | Gain de tour (arrivée) | `extraTurn = true` conditionnel |
+| `safeCellsActive` | Cases sûres | `SAFE_CELLS.has(cell)` conditionnel |
+
+### 5.14 Niveaux d'IA (Prio 2)
+
+- **Facile** : heuristique réduite (×0.5) + beaucoup d'aléa (±12).
+- **Normal** : heuristique complète classique.
+- **Difficile** : heuristique + simulation des captures imminentes adverses.
+
+### 5.15 Achievements (Prio 2)
+
+8 succès débloquables, stockés en `ludo-royal-achievements-v1` :
+- `first_move`, `first_capture`, `three_six`, `finish_one`, `win_game`, `perfect_run`, `express_win`, `all_captures`.
+- Toast doré animé en bas d'écran avec icône + label.
+
+### 5.16 Mode Express (Prio 2)
+
+Toggle qui passe à **2 pions par joueur** au lieu de 4. Active automatiquement l'achievement `express_win` sur victoire.
+
+### 5.17 Mode Spectateur (Prio 2)
+
+Toggle dans `#online-join-pane`. Connecte via PeerJS avec `{ type: 'SPECTATE' }`. Reçoit passivement les `SYNC_STATE` et `ANIMATE_MOVE`. Aucune interaction possible sur le jeu.
+
+### 5.18 Chat intégré (Prio 3)
+
+Panneau `#chat-panel` dans la sidebar avec input + bouton. Messages diffusés via PeerJS `{ type: 'CHAT', msg }`. Historique 60 messages, sanitisation via `escapeHtml()`. Raccourci `Enter` pour envoyer.
+
+### 5.19 Skins de pions (Prio 3)
+
+4 skins : **Classique** | **Émojis** | **Fruits** | **Animaux**. Application via classes CSS `skin-*` + attribut `data-emoji`. Persistance du choix en LocalStorage.
+
+### 5.20 Musique de fond (Prio 3)
+
+Drone indien généré en WebAudio : 4 oscillateurs (La2, Mi3, La3, Do#4) avec LFOs. Toggle via `#music-btn` dans le header, icônes on/off, fade in/out propre.
+
+### 5.21 Thèmes visuels (Prio 3)
+
+4 thèmes : **Dark** (défaut) | **Pastel** | **Neon** | **Forest**. Application via `body.theme-*` avec override des variables CSS. Persistance LocalStorage.
+
+### 5.22 i18n FR/EN (Prio 3)
+
+Dictionnaire `I18N.fr` / `I18N.en` avec 30+ clés. Toggle `#lang-btn` dans le header, persistance LocalStorage, attributs `data-i18n="..."`.
+
+### 5.23 Mode Replay (Prio 3)
+
+Enregistrement automatique de chaque `SYNC_STATE` (côté client). Panneau `#replay-panel` avec boutons ◀ ▶ ▶ + auto-lecture 800ms.
+
+### 5.24 Télémétrie anonymisée (Prio 3)
+
+Compteurs locaux en `ludo-royal-telemetry-v1` : parties jouées, gagnées, captures totales, lancers totaux, victoires par couleur. 100% LocalStorage, aucune remontée réseau.
+
+### 5.25 PWA iOS installable (Prio 3 & 4)
+
+- `manifest.json` enrichi : icône 180x180, `categories: ["games"]`, `maskable`.
+- `apple-touch-startup-image` → [`public/splash.svg`](public/splash.svg) (SVG vectoriel 1024×1366).
+- Métadonnées iOS complètes : `apple-mobile-web-app-capable`, `status-bar-style`, `viewport-fit=cover`.
+- Bannière d'installation custom interceptant `beforeinstallprompt` après 3s.
+
+### 5.26 Indicateur réseau (Prio 4)
+
+Pastille flottante bas-gauche, sync `online`/`offline` events. Vert pulsant (en ligne) / rouge (hors ligne).
+
+### 5.27 Error Boundary globale (Prio 4)
+
+Overlay rouge `role="alertdialog"` capturant `window.error` + `unhandledrejection`. Boutons "Recharger" / "Fermer".
+
+### 5.28 Accessibilité clavier (Prio 4)
+
+| Touche | Effet |
+|---|---|
+| `Space` | Lancer le dé |
+| `Enter` | Valider pion sélectionné |
+| `← → ↑ ↓` | Naviguer entre pions jouables |
+| `M` | Toggle musique |
+| `S` | Toggle son |
+| `Échap` | Fermer modale/erreur |
+| `Tab` | Skip-link → plateau |
+
+`:focus-visible` avec outline doré. `@media (prefers-reduced-motion: reduce)` désactive toutes les animations.
 
 ---
 
@@ -682,19 +811,32 @@ Aucun service (ni front ni back) n'est défini. Le projet n'a pas de couche d'ab
 |---|---|---|
 | `https://fonts.googleapis.com/css2?...` | Polices Playfair Display + Inter | CSS |
 | `https://fonts.gstatic.com/...` | Fichiers de police | Binaire |
+| `https://cdn.jsdelivr.net/npm/peerjs@1.5.4/...` | Bibliothèque PeerJS (multijoueur P2P) | JS (avec SRI SHA-384) |
+| `https://0.peerjs.com/` (via WebSocket) | Signaling PeerJS public broker | WSS |
 | Vercel Analytics endpoint | Événements analytics (prod only) | Beacon |
 
 ---
 
-## 11. Documentation complète de la base de données
+## 11. Persistance locale (LocalStorage)
 
-**Aucune base de données.**
+**Aucune base de données distante.** Toute la persistance est 100% côté client via l'API `window.localStorage`.
 
-> Information non déterminable automatiquement : le projet ne contient aucune base de données (ni PostgreSQL, MySQL, SQLite, MongoDB, Supabase, Firebase, ni même LocalStorage). Toute la logique est en mémoire vive, perdue au rafraîchissement de la page.
+> Information non déterminable automatiquement : aucune base distante. Toutes les données sont stockées localement dans le navigateur de l'utilisateur.
 
-### 11.1 Modèle conceptuel (modèle mental)
+### 11.1 Clés LocalStorage
 
-Si on devait modéliser l'état du jeu comme une base, on aurait :
+| Clé | Version | Contenu | Persistance |
+|---|---|---|---|
+| `ludo-royal-state-v1` | 1 | `{ state, rules, setupCount, setupTypes, savedAt }` | Auto-save debounced 400ms |
+| `ludo-royal-reconnect-v1` | 1 | `{ token, roomCode, at }` | Token de reconnexion P2P |
+| `ludo-royal-achievements-v1` | 1 | `[achievementId, ...]` | Liste des succès débloqués |
+| `ludo-royal-telemetry-v1` | 1 | `{ gamesPlayed, gamesWon, totalCaptures, totalRolls, colorWins }` | Compteurs anonymisés |
+| `ludo-royal-lang` | — | `'fr' \| 'en'` | Langue UI |
+| `ludo-royal-theme` | — | `'dark' \| 'pastel' \| 'neon' \| 'forest'` | Thème visuel |
+| `ludo-royal-skin` | — | `'classic' \| 'emojis' \| 'fruits' \| 'animals'` | Skin des pions |
+| `ludo-royal-pwa-dismissed` | — | `'1'` | Bannière install refusée |
+
+### 11.2 Modèle conceptuel (mémoire JS)
 
 ```mermaid
 erDiagram
@@ -704,6 +846,8 @@ erDiagram
     string name "ex: 'Rouge'"
     boolean isAI
     int finishedRank "0 si en cours"
+    int captures
+    boolean wasCaptured
   }
   TOKEN {
     int id PK "pIdx*4 + tIdx"
@@ -712,16 +856,16 @@ erDiagram
   }
 ```
 
-### 11.2 Pseudo-schéma SQL
-
-> Équivalent conceptuel pour référence :
+### 11.3 Pseudo-schéma SQL (équivalent conceptuel)
 
 ```sql
 CREATE TABLE players (
   color VARCHAR(10) PRIMARY KEY,
   name VARCHAR(50),
   is_ai BOOLEAN,
-  finished_rank INT DEFAULT 0
+  finished_rank INT DEFAULT 0,
+  captures INT DEFAULT 0,
+  was_captured BOOLEAN DEFAULT false
 );
 
 CREATE TABLE tokens (
@@ -738,7 +882,23 @@ CREATE TABLE game_state (
   six_count INT,
   busy BOOLEAN,
   game_over BOOLEAN,
+  total_moves INT DEFAULT 0,
   ranking JSONB
+);
+
+CREATE TABLE rules (
+  id VARCHAR(50) PRIMARY KEY,
+  enabled BOOLEAN
+);
+
+CREATE TABLE achievements (
+  id VARCHAR(50) PRIMARY KEY,
+  unlocked_at TIMESTAMP
+);
+
+CREATE TABLE telemetry (
+  key VARCHAR(50) PRIMARY KEY,
+  value INT
 );
 ```
 
@@ -814,31 +974,34 @@ Procédure Netlify standard :
 
 | Risque | Présent ? | Mitigation |
 |---|---|---|
-| A01 Broken Access Control | ❌ N/A | Pas d'accès |
-| A02 Cryptographic Failures | ❌ N/A | Pas de données sensibles |
-| A03 Injection (SQL/XSS) | ⚠️ Faible | `innerHTML` contrôlé, mais `log(msg, gold)` insère du HTML — risque si input utilisateur. Actuellement safe car `msg` vient du code, pas de l'utilisateur. |
-| A04 Insecure Design | ✅ OK | Logique simple, bien isolée |
-| A05 Security Misconfiguration | ⚠️ Moyen | `next.config.mjs` a `typescript.ignoreBuildErrors: true` — peut masquer des erreurs. |
-| A06 Vulnerable Components | ⚠️ À surveiller | Dépendances récentes (Next 16, React 19) ; surveiller advisories. |
-| A07 Identification & Auth | ❌ N/A | Pas d'auth |
-| A08 Software & Data Integrity | ⚠️ Moyen | Dépendances 2 lockfiles (npm + pnpm) — incohérence possible |
-| A09 Security Logging | ❌ N/A | Pas de logs de sécurité nécessaires |
+| A01 Broken Access Control | ❌ N/A | Pas d'accès distant |
+| A02 Cryptographic Failures | ✅ OK | `crypto.getRandomValues()` pour jetons de reconnexion |
+| A03 Injection (SQL/XSS) | ✅ OK | `escapeHtml()` sur tous les inputs utilisateur (chat, room code, pseudo) |
+| A04 Insecure Design | ✅ OK | Architecture modulaire, rôles stricts (local/host/client/spectator) |
+| A05 Security Misconfiguration | ⚠️ Moyen | `typescript.ignoreBuildErrors: true` toujours présent, package-lock supprimé |
+| A06 Vulnerable Components | ⚠️ À surveiller | PeerJS 1.5.4 (CDN, SRI vérifié), surveiller advisories |
+| A07 Identification & Auth | ❌ N/A | Pas d'auth, jetons opaques stockés en LocalStorage |
+| A08 Software & Data Integrity | ✅ OK | SRI SHA-384 sur PeerJS CDN, SW v2 avec cache versionné |
+| A09 Security Logging | ❌ N/A | Pas de logs serveur |
 | A10 SSRF | ❌ N/A | Pas de requêtes serveur |
 
 ### 15.2 Mesures en place
 
-- `innerHTML` utilisé uniquement avec constantes (noms, couleurs, pips).
-- Aucun `eval()`.
-- Aucun `localStorage` / `sessionStorage` / cookies.
-- Pas de secrets.
-- CSP : **Information non déterminable automatiquement** (aucun header CSP explicite, dépend de Netlify defaults).
+- **SRI (Subresource Integrity)** : SHA-384 sur le CDN PeerJS.
+- **Sanitisation** : `escapeHtml()` systématique pour chat, room code, pseudo.
+- **`innerHTML`** : utilisé uniquement avec constantes internes (noms joueurs générés, règles, achievements).
+- **Aucun `eval()`**.
+- **Aucun secret** : aucune clé API, JWT, ou mot de passe.
+- **CSP** : **Information non déterminable automatiquement** (aucun header CSP explicite, dépend de Netlify defaults).
+- **Stockage local** : 8 clés LocalStorage documentées, données anonymisées.
+- **Service Worker** : `ludo-royal-v2` versioning, purge automatique des anciens caches à l'activate.
 
 ### 15.3 Recommandations
 
-1. Ajouter un en-tête CSP via `next.config.mjs` (`headers()`).
-2. Retirer `typescript.ignoreBuildErrors` pour le futur.
-3. Supprimer `package-lock.json` pour éviter la confusion avec pnpm.
-4. Activer Subresource Integrity (SRI) sur Google Fonts.
+1. Ajouter un en-tête CSP via `netlify.toml` ou `next.config.mjs` (`script-src 'self' cdn.jsdelivr.net`).
+2. Retirer `typescript.ignoreBuildErrors` pour le futur (typage strict).
+3. Ajouter `Permissions-Policy` pour restreindre `accelerometer`, `gyroscope`, etc.
+4. Activer Subresource Integrity (SRI) sur Google Fonts si critique.
 
 ---
 
@@ -846,24 +1009,28 @@ Procédure Netlify standard :
 
 ### 16.1 Mesures
 
-- **Taille totale** (`public/`) : ~80 KB (HTML+CSS+JS non minifiés).
-- **JS** : 1 fichier, pas de framework, ~25 KB non minifié.
-- **Rendu** : DOM pur, pas de virtual DOM, peintures minimisées.
+- **Taille totale** (`public/`) : ~110 KB (HTML+CSS+JS+splash, non minifiés).
+- **JS** : 1 fichier monolithique, ~50 KB non minifié (incluant IA, i18n, chat, replay, telemetry).
+- **Rendu** : DOM pur + `requestAnimationFrame` pour batcher les animations de pions.
 - **Animation** : CSS transforms (GPU), pas de reflow.
-- **Audio** : Web Audio API, oscillateurs synthétiques (zéro fichier MP3).
+- **Audio** : Web Audio API, oscillateurs synthétiques (zéro fichier MP3), musique de fond générée.
 
 ### 16.2 Optimisations observées
 
-- Empilement de pions via `STACK_OFFSETS` (pas de calcul complexe).
-- Animations courtes (230–560 ms).
-- `setTimeout` / `setInterval` pour délais d'IA (acceptable).
+- **Service Worker v2** : `network-first` pour HTML (toujours à jour), `cache-first` pour assets statiques → offline instantané.
+- **`requestAnimationFrame`** : `requestRenderTokens()` batch les rendus de pions (évite reflows multiples).
+- **WebRTC ANIMATE_MOVE** : un seul message léger pour déclencher l'animation locale client (vs broadcast complet à chaque case).
+- **Lazy-init** : `AudioContext` créé au premier son (pas au chargement).
+- **Persistance debounced** : 400ms après mutation (pas à chaque accès).
+- **CSS `clamp()`** mobile pour éviter les collapses de mise en page.
 
 ### 16.3 Optimisations potentielles
 
-- Minifier `ludo.js` (`terser`).
+- Minifier `ludo.js` avec Terser (gain ~40% de taille).
+- Code-splitting des modules IA/i18n/chat/replay si le fichier dépasse 100 KB.
 - Précharger Google Fonts (`<link rel="preload">`).
-- Lazy-init `AudioContext` au premier son (déjà fait).
-- Utiliser `transform` au lieu de `top/left` pour animations (déjà fait).
+- Migrer le rendu de pions sur `<canvas>` si > 50 pions simultanés (rare).
+- Utiliser `BroadcastChannel` API pour synchroniser plusieurs onglets du même utilisateur.
 
 ---
 

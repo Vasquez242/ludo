@@ -1529,12 +1529,47 @@ function generateRoomCode() {
   return 'LUDO-' + code;
 }
 
-const peerOptions = {
-  host: '0.peerjs.com',
-  secure: true,
-  port: 443,
-  debug: 1
-};
+/* ==================== PEERJS MULTI-BROKER FALLBACK ==================== */
+// Liste de brokers PeerJS testés par ordre de priorité
+const PEER_BROKERS = [
+  { host: '0.peerjs.com', port: 443, secure: true, name: 'PeerJS Cloud' },
+  { host: 'peerjs.com',   port: 443, secure: true, name: 'PeerJS.com' },
+];
+
+let brokerIndex = 0;
+let brokerTimeout = null;
+let hostRetryCount = 0;
+const MAX_HOST_RETRIES = 3;
+const BROKER_TIMEOUT_MS = 8000;
+
+function clearBrokerTimeout() {
+  if (brokerTimeout) { clearTimeout(brokerTimeout); brokerTimeout = null; }
+}
+
+function showNetworkError(userMsg, technicalMsg) {
+  const lobby = $('#online-host-pane');
+  if (!lobby) return;
+  let banner = document.getElementById('network-error-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'network-error-banner';
+    banner.style.cssText = 'background:rgba(229,72,77,0.15);border:1px solid var(--red);border-radius:12px;padding:14px;margin-bottom:12px;color:#ff8a8d;font-size:13px;';
+    lobby.insertBefore(banner, lobby.firstChild);
+  }
+  banner.innerHTML = `
+    <div style="font-weight:700;margin-bottom:6px;">⚠️ ${userMsg}</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">${technicalMsg}</div>
+    <button id="retry-broker" class="start-btn" style="margin:0;padding:8px 14px;font-size:12px;width:auto;">Réessayer</button>
+    <button id="use-manual" class="btn-secondary" style="margin:0 0 0 6px;padding:8px 14px;font-size:12px;width:auto;">Mode Manuel (sans serveur)</button>
+  `;
+  $('#retry-broker').onclick = () => { brokerIndex = 0; hostRetryCount = 0; initHost(); };
+  $('#use-manual').onclick = () => startManualMode('host');
+}
+
+function clearNetworkError() {
+  const banner = document.getElementById('network-error-banner');
+  if (banner) banner.remove();
+}
 
 // --- HÔTE (HOST) ---
 function initHost() {
@@ -1544,25 +1579,74 @@ function initHost() {
   mp.roomCode = generateRoomCode();
   $('#room-code-display').textContent = mp.roomCode;
 
-  if (mp.peer) mp.peer.destroy();
+  if (mp.peer) { try { mp.peer.destroy(); } catch (e) {} mp.peer = null; }
 
-  mp.peer = new Peer(mp.roomCode, peerOptions);
+  if (hostRetryCount >= MAX_HOST_RETRIES * PEER_BROKERS.length) {
+    showNetworkError(
+      'Aucun serveur P2P disponible',
+      'Tous les brokers PeerJS sont injoignables. Utilisez le Mode Manuel (sans serveur) pour jouer en copiant un code.'
+    );
+    return;
+  }
+
+  const broker = PEER_BROKERS[brokerIndex % PEER_BROKERS.length];
+  log(`Connexion au broker ${broker.name}…`);
+
+  mp.peer = new Peer(mp.roomCode, {
+    host: broker.host,
+    port: broker.port,
+    secure: broker.secure,
+    debug: 1,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+      ],
+    },
+  });
+
+  clearBrokerTimeout();
+  brokerTimeout = setTimeout(() => {
+    if (mp.peer && !mp.peer.open) {
+      console.warn(`Broker ${broker.name} timeout`);
+      try { mp.peer.destroy(); } catch (e) {}
+      brokerIndex++;
+      hostRetryCount++;
+      initHost();
+    }
+  }, BROKER_TIMEOUT_MS);
 
   mp.peer.on('open', () => {
-    log(`Salon créé. Code : <strong>${mp.roomCode}</strong> (Copiable en un clic)`, true);
-    // L'hôte est toujours le premier joueur (Rouge)
+    clearBrokerTimeout();
+    clearNetworkError();
+    log(`Salon créé via ${broker.name}. Code : <strong>${mp.roomCode}</strong>`, true);
     mp.players = [{ peerId: mp.peer.id, name: 'Hôte (Rouge)', color: 'red', isAI: false, connected: true }];
-    // Compléter les slots temporaires avec IA
     fillLobbySlotsWithAI();
     updateHostLobbyUI();
   });
 
   mp.peer.on('error', (err) => {
-    console.error(err);
+    console.error('Peer error:', err);
+    clearBrokerTimeout();
     if (err.type === 'unavailable-id') {
-      initHost(); // Si l'identifiant est déjà pris, on réessaie avec un autre code
+      log('Code salon pris, génération d\'un nouveau code…');
+      brokerIndex = 0;
+      hostRetryCount++;
+      setTimeout(() => initHost(), 200);
+    } else if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed' || err.type === 'ssl-unavailable') {
+      log(`<span style="color:var(--red)">Broker ${broker.name} indisponible (${err.type})…</span>`);
+      try { mp.peer.destroy(); } catch (e) {}
+      brokerIndex++;
+      hostRetryCount++;
+      setTimeout(() => initHost(), 300);
+    } else if (err.type === 'invalid-id' || err.type === 'taken') {
+      showNetworkError('Code de salon invalide', 'Le code généré pose problème. Cliquez sur Réessayer.');
+    } else if (err.type === 'peer-unavailable') {
+      // Pas applicable côté hôte mais on log
+      log(`<span style="color:var(--red)">${err.type}</span>`);
     } else {
-      log(`<span style="color:var(--red)">Erreur de création de salon : ${err.type}</span>`);
+      log(`<span style="color:var(--red)">Erreur Peer : ${err.type}</span>`);
     }
   });
 
@@ -1570,13 +1654,184 @@ function initHost() {
     conn.on('open', () => {
       conn.on('data', (data) => handleHostMessage(conn, data));
     });
-    conn.on('close', () => {
-      handleClientDisconnection(conn.peer);
-    });
-    conn.on('error', () => {
-      handleClientDisconnection(conn.peer);
-    });
+    conn.on('close', () => handleClientDisconnection(conn.peer));
+    conn.on('error', () => handleClientDisconnection(conn.peer));
   });
+}
+
+/* ==================== MODE MANUEL (sans serveur P2P) ==================== */
+// Échange d'offre/réponse SDP via copy-paste — fonctionne sans aucun serveur
+const manualMode = { active: false, role: null, peer: null, connection: null, offer: null };
+
+function startManualMode(role) {
+  manualMode.active = true;
+  manualMode.role = role;
+  showManualUI();
+}
+
+function showManualUI() {
+  const lobby = $('#online-host-pane');
+  if (!lobby) return;
+  clearNetworkError();
+  lobby.innerHTML = `
+    <div class="setup-section">
+      <h2>Mode Manuel — ${manualMode.role === 'host' ? 'Hôte' : 'Client'}</h2>
+      <p style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">
+        Échangez les codes ci-dessous avec votre adversaire par message, email, ou WhatsApp.
+        Aucun serveur requis.
+      </p>
+      <div id="manual-step-1">
+        <div class="rule-label" style="margin-bottom:6px;">1️⃣ Code à envoyer</div>
+        <div class="code-box">
+          <textarea id="manual-offer" readonly style="flex:1;background:transparent;border:none;color:var(--gold);font-family:monospace;font-size:11px;resize:none;height:80px;outline:none;"></textarea>
+          <button id="manual-copy" class="copy-btn">Copier</button>
+        </div>
+        <button id="manual-generate" class="start-btn" style="margin-top:10px;padding:12px;font-size:14px;">Générer mon code</button>
+      </div>
+      <div id="manual-step-2" style="margin-top:14px;display:none;">
+        <div class="rule-label" style="margin-bottom:6px;">2️⃣ Coller le code de l'adversaire</div>
+        <textarea id="manual-answer" class="text-input" placeholder="Coller le code ici..." style="height:80px;font-family:monospace;font-size:11px;"></textarea>
+        <button id="manual-connect" class="start-btn" style="margin-top:10px;padding:12px;font-size:14px;">Se connecter</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('manual-copy').onclick = () => {
+    const txt = document.getElementById('manual-offer').value;
+    if (txt) navigator.clipboard.writeText(txt).then(() => { document.getElementById('manual-copy').textContent = 'Copié !'; setTimeout(() => document.getElementById('manual-copy').textContent = 'Copier', 1500); });
+  };
+  document.getElementById('manual-generate').onclick = generateManualOffer;
+  document.getElementById('manual-connect').onclick = connectManualAnswer;
+}
+
+async function generateManualOffer() {
+  try {
+    manualMode.peer = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+    manualMode.peer.onicecandidate = (e) => {
+      if (e.candidate) {
+        // Recueillir tous les candidats
+        if (!manualMode.candidates) manualMode.candidates = [];
+        manualMode.candidates.push(e.candidate);
+      }
+    };
+    manualMode.peer.ondatachannel = (e) => {
+      manualMode.connection = e.channel;
+      setupManualDataChannel();
+    };
+    const offer = await manualMode.peer.createOffer();
+    await manualMode.peer.setLocalDescription(offer);
+    // Attendre la fin de la collecte ICE
+    await new Promise(r => setTimeout(r, 1500));
+    const payload = { sdp: manualMode.peer.localDescription, candidates: manualMode.candidates || [] };
+    const encoded = btoa(JSON.stringify(payload));
+    document.getElementById('manual-offer').value = encoded;
+    log(`Code manuel généré (${encoded.length} caractères). Envoyez-le à votre adversaire.`, true);
+    document.getElementById('manual-step-2').style.display = 'block';
+  } catch (e) {
+    log(`<span style="color:var(--red)">Erreur mode manuel : ${e.message}</span>`);
+  }
+}
+
+async function connectManualAnswer() {
+  try {
+    const encoded = document.getElementById('manual-answer').value.trim();
+    if (!encoded) { log('Collez le code de l\'adversaire.'); return; }
+    const payload = JSON.parse(atob(encoded));
+    manualMode.peer = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+    manualMode.peer.onicecandidate = (e) => {
+      if (e.candidate) {
+        if (!manualMode.candidates) manualMode.candidates = [];
+        manualMode.candidates.push(e.candidate);
+      }
+    };
+    manualMode.peer.ondatachannel = (e) => {
+      manualMode.connection = e.channel;
+      setupManualDataChannel();
+    };
+    await manualMode.peer.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+    if (payload.candidates) {
+      for (const c of payload.candidates) {
+        try { await manualMode.peer.addIceCandidate(new RTCIceCandidate(c)); } catch (e) {}
+      }
+    }
+    const answer = await manualMode.peer.createAnswer();
+    await manualMode.peer.setLocalDescription(answer);
+    await new Promise(r => setTimeout(r, 1500));
+    const answerPayload = { sdp: manualMode.peer.localDescription, candidates: manualMode.candidates || [] };
+    const answerEncoded = btoa(JSON.stringify(answerPayload));
+    // Pour le client on doit afficher la réponse à renvoyer à l'hôte
+    showManualAnswerUI(answerEncoded);
+  } catch (e) {
+    log(`<span style="color:var(--red)">Code invalide : ${e.message}</span>`);
+  }
+}
+
+function showManualAnswerUI(encoded) {
+  const lobby = $('#online-host-pane');
+  if (!lobby) return;
+  lobby.innerHTML = `
+    <div class="setup-section">
+      <h2>Mode Manuel — Réponse</h2>
+      <p style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">
+        Envoyez ce code à l'hôte. En attente de la connexion…
+      </p>
+      <div class="code-box">
+        <textarea id="manual-answer-out" readonly style="flex:1;background:transparent;border:none;color:var(--gold);font-family:monospace;font-size:11px;resize:none;height:80px;outline:none;">${encoded}</textarea>
+        <button id="manual-copy-out" class="copy-btn">Copier</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('manual-copy-out').onclick = () => {
+    navigator.clipboard.writeText(encoded).then(() => { document.getElementById('manual-copy-out').textContent = 'Copié !'; setTimeout(() => document.getElementById('manual-copy-out').textContent = 'Copier', 1500); });
+}
+
+function setupManualDataChannel() {
+  const dc = manualMode.connection;
+  if (!dc) return;
+  dc.onopen = () => {
+    log(`Connexion manuelle établie !`, true);
+    // Bridge : faire croire à mp.conn que la connexion existe
+    if (manualMode.role === 'host') {
+      mp.role = 'host';
+      mp.active = true;
+      // Stocker comme une connexion factice compatible
+      mp.conn[manualMode.peer.connectionId || 'manual'] = {
+        open: true,
+        send: (data) => dc.send(JSON.stringify(data)),
+        peer: 'manual-client',
+        color: 'green',
+        playerName: 'Adversaire',
+      };
+      mp.myColor = 'red';
+      // Émettre le pseudo du client
+      dc.send(JSON.stringify({ type: 'JOIN', name: 'Adversaire (manuel)' }));
+    } else {
+      mp.role = 'client';
+      mp.active = true;
+      mp.myColor = 'green';
+      mp.conn[mp.roomCode] = {
+        open: true,
+        send: (data) => dc.send(JSON.stringify(data)),
+        peer: 'manual-host',
+      };
+      dc.send(JSON.stringify({ type: 'JOIN', name: prompt('Votre pseudo :') || 'Client' }));
+    }
+  };
+  dc.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      // Router vers les handlers existants
+      if (manualMode.role === 'host') {
+        const conn = Object.values(mp.conn)[0];
+        if (conn) handleHostMessage(conn, data);
+      } else {
+        handleClientMessage(data);
+      }
+    } catch (err) { console.error('Manual message error', err); }
+  };
 }
 
 // --- Reconnexion multi ---
@@ -1781,53 +2036,115 @@ function handleClientDisconnection(peerId) {
 }
 
 // --- CLIENT ---
+let clientRetryCount = 0;
 function initClient(roomCode, name) {
   mp.active = true;
   mp.role = 'client';
   mp.roomCode = roomCode.toUpperCase().trim();
 
-  if (mp.peer) mp.peer.destroy();
+  if (mp.peer) { try { mp.peer.destroy(); } catch (e) {} mp.peer = null; }
 
-  const randomClientId = 'LUDO-CLIENT-' + Math.floor(Math.random() * 100000);
-  mp.peer = new Peer(randomClientId, peerOptions);
+  if (clientRetryCount >= PEER_BROKERS.length * 2) {
+    showNetworkError(
+      'Aucun serveur P2P disponible',
+      'Tous les brokers PeerJS sont injoignables. Essayez le Mode Manuel (sans serveur).'
+    );
+    return;
+  }
+
+  const broker = PEER_BROKERS[clientRetryCount % PEER_BROKERS.length];
+  log(`Connexion au broker ${broker.name}…`);
+
+  const randomClientId = 'LUDO-C-' + Math.floor(Math.random() * 1e8).toString(36);
+  mp.peer = new Peer(randomClientId, {
+    host: broker.host,
+    port: broker.port,
+    secure: broker.secure,
+    debug: 1,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+      ],
+    },
+  });
+
+  let clientConnected = false;
+  const clientTimeout = setTimeout(() => {
+    if (!clientConnected && mp.peer && !mp.peer.open) {
+      console.warn(`Client broker ${broker.name} timeout`);
+      try { mp.peer.destroy(); } catch (e) {}
+      clientRetryCount++;
+      initClient(mp.roomCode, name);
+    }
+  }, BROKER_TIMEOUT_MS);
 
   mp.peer.on('open', () => {
-    log(`Connexion au salon <strong>${mp.roomCode}</strong>...`);
-    const conn = mp.peer.connect(mp.roomCode);
+    clientConnected = true;
+    clearTimeout(clientTimeout);
+    clearNetworkError();
+    log(`Connecté à ${broker.name}. Connexion au salon <strong>${mp.roomCode}</strong>…`);
+    let conn;
+    try {
+      conn = mp.peer.connect(mp.roomCode, { reliable: true });
+    } catch (e) {
+      log(`<span style="color:var(--red)">Erreur de connexion : ${e.message}</span>`);
+      return;
+    }
     mp.conn[mp.roomCode] = conn;
 
+    const connectTimeout = setTimeout(() => {
+      if (!conn.open) {
+        log(`<span style="color:var(--red)">L'hôte ${mp.roomCode} est injoignable. Vérifiez le code.</span>`);
+      }
+    }, 6000);
+
     conn.on('open', () => {
-      log(`Connecté ! Envoi des informations d'inscription...`);
+      clearTimeout(connectTimeout);
+      log('Connecté à l\'hôte !', true);
       const saved = loadReconnectToken();
       const reconnectToken = (saved && saved.roomCode === mp.roomCode) ? saved.token : null;
-      conn.send({ type: 'JOIN', name: name, reconnectToken });
+      try { conn.send({ type: 'JOIN', name, reconnectToken }); } catch (e) { console.error(e); }
     });
 
     conn.on('data', (data) => handleClientMessage(data));
 
     conn.on('close', () => {
-      alert("Déconnecté de l'hôte. Retour à la configuration.");
-      location.reload();
+      log(`<span style="color:var(--red)">Déconnecté de l'hôte.</span>`);
+      // Pas de reload brutal, on garde l'écran pour retry
     });
 
     conn.on('error', (err) => {
-      console.error(err);
-      alert(`Erreur de connexion : ${err}`);
-      location.reload();
+      console.error('Conn error:', err);
+      log(`<span style="color:var(--red)">Erreur de connexion : ${err.type || err.message}</span>`);
     });
   });
 
   mp.peer.on('error', (err) => {
-    console.error(err);
-    alert(`Erreur Peer : ${err.type}`);
-    location.reload();
+    console.error('Peer error:', err);
+    clearTimeout(clientTimeout);
+    if (err.type === 'peer-unavailable') {
+      log(`<span style="color:var(--red)">Salon ${mp.roomCode} introuvable. Vérifiez le code avec l'hôte.</span>`);
+    } else if (['network', 'server-error', 'socket-error', 'socket-closed', 'ssl-unavailable'].includes(err.type)) {
+      log(`<span style="color:var(--red)">Broker ${broker.name} indisponible…</span>`);
+      try { mp.peer.destroy(); } catch (e) {}
+      clientRetryCount++;
+      setTimeout(() => initClient(mp.roomCode, name), 400);
+    } else if (err.type === 'unavailable-id') {
+      // ID client pris, réessayer avec un nouveau
+      clientRetryCount++;
+      setTimeout(() => initClient(mp.roomCode, name), 200);
+    } else {
+      log(`<span style="color:var(--red)">Erreur Peer : ${err.type}</span>`);
+    }
   });
 }
 
 function handleClientMessage(data) {
   if (data.type === 'ERROR') {
-    alert(data.message);
-    location.reload();
+    log(`<span style="color:var(--red)">${data.message}</span>`);
+    return;
   }
 
   if (data.type === 'JOIN_OK') {
