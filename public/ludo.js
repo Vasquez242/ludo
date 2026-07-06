@@ -85,6 +85,17 @@ const state = {
   ranking: [],
 };
 
+/* ---------- État Multijoueur ---------- */
+const mp = {
+  active: false,
+  role: 'local', // 'local' | 'host' | 'client'
+  peer: null,
+  conn: {}, // PeerID -> connection (Host) ou RoomCode -> connection (Client)
+  roomCode: null,
+  myColor: 'red', // Hôte est Rouge par défaut
+  players: [], // Liste des joueurs du salon : { peerId, name, color, isAI, connected }
+};
+
 let setupCount = 4;
 let setupTypes = { red: 'human', green: 'ai', yellow: 'ai', blue: 'ai' };
 
@@ -138,7 +149,10 @@ document.querySelectorAll('.count-btn').forEach((b) => {
   });
 });
 
-$('#start-btn').addEventListener('click', startGame);
+$('#start-btn').addEventListener('click', () => {
+  requestShakePermission();
+  startGame();
+});
 $('#restart-btn').addEventListener('click', () => {
   victoryModal.classList.remove('show');
   gameScreen.classList.remove('active');
@@ -157,6 +171,79 @@ $('#sound-btn').addEventListener('click', () => {
   soundOn = !soundOn;
   $('#sound-on-icon').style.display = soundOn ? '' : 'none';
   $('#sound-off-icon').style.display = soundOn ? 'none' : '';
+});
+
+// --- Gestion des onglets de configuration ---
+$('#btn-mode-local').addEventListener('click', () => {
+  $('#btn-mode-local').classList.add('active');
+  $('#btn-mode-online').classList.remove('active');
+  $('#local-setup').style.display = 'block';
+  $('#online-setup').style.display = 'none';
+  $('#start-btn').style.display = 'block';
+  mp.active = false;
+  if (mp.peer) {
+    mp.peer.destroy();
+    mp.peer = null;
+  }
+});
+
+$('#btn-mode-online').addEventListener('click', () => {
+  $('#btn-mode-local').classList.remove('active');
+  $('#btn-mode-online').classList.add('active');
+  $('#local-setup').style.display = 'none';
+  $('#online-setup').style.display = 'block';
+  // Par défaut en ligne, on montre le panneau Hôte
+  $('#btn-choose-host').classList.add('active');
+  $('#btn-choose-join').classList.remove('active');
+  $('#online-host-pane').style.display = 'flex';
+  $('#online-join-pane').style.display = 'none';
+  $('#start-btn').style.display = 'block'; // L'hôte peut lancer
+  initHost();
+});
+
+$('#btn-choose-host').addEventListener('click', () => {
+  $('#btn-choose-host').classList.add('active');
+  $('#btn-choose-join').classList.remove('active');
+  $('#online-host-pane').style.display = 'flex';
+  $('#online-join-pane').style.display = 'none';
+  $('#start-btn').style.display = 'block';
+  initHost();
+});
+
+$('#btn-choose-join').addEventListener('click', () => {
+  $('#btn-choose-host').classList.remove('active');
+  $('#btn-choose-join').classList.add('active');
+  $('#online-host-pane').style.display = 'none';
+  $('#online-join-pane').style.display = 'flex';
+  $('#start-btn').style.display = 'none'; // Les clients ne lancent pas
+  if (mp.peer && mp.role === 'host') {
+    mp.peer.destroy();
+    mp.peer = null;
+  }
+});
+
+$('#btn-copy-code').addEventListener('click', () => {
+  const code = $('#room-code-display').textContent;
+  navigator.clipboard.writeText(code).then(() => {
+    const orig = $('#btn-copy-code').textContent;
+    $('#btn-copy-code').textContent = 'Copié !';
+    setTimeout(() => $('#btn-copy-code').textContent = orig, 1500);
+  }).catch(console.error);
+});
+
+$('#join-btn').addEventListener('click', () => {
+  requestShakePermission();
+  const code = $('#room-code-input').value.trim();
+  const name = $('#player-name-input').value.trim();
+  if (!code) {
+    alert('Veuillez entrer un code de salon.');
+    return;
+  }
+  if (!name) {
+    alert('Veuillez entrer votre pseudo.');
+    return;
+  }
+  initClient(code, name);
 });
 
 /* ==================== CONSTRUCTION DU PLATEAU ==================== */
@@ -306,13 +393,29 @@ function setHint(t) { hintEl.textContent = t; }
 
 /* ==================== DÉMARRAGE ==================== */
 function startGame() {
-  state.players = COLOR_SETS[setupCount].map((color) => ({
-    color,
-    name: COLOR_NAMES[color],
-    isAI: setupTypes[color] === 'ai',
-    tokens: [-1, -1, -1, -1],
-    finishedRank: 0,
-  }));
+  if (mp.active && mp.role === 'host') {
+    Object.values(mp.conn).forEach(conn => {
+      if (conn.open) {
+        conn.send({ type: 'START_GAME' });
+      }
+    });
+
+    state.players = mp.players.map(p => ({
+      color: p.color,
+      name: p.name,
+      isAI: p.isAI,
+      tokens: [-1, -1, -1, -1],
+      finishedRank: 0
+    }));
+  } else {
+    state.players = COLOR_SETS[setupCount].map((color) => ({
+      color,
+      name: COLOR_NAMES[color],
+      isAI: setupTypes[color] === 'ai',
+      tokens: [-1, -1, -1, -1],
+      finishedRank: 0,
+    }));
+  }
   state.current = 0;
   state.dice = 0;
   state.rolled = false;
@@ -344,13 +447,28 @@ function beginTurn() {
   renderPlayers();
   clearMovable();
 
-  if (p.isAI) {
-    diceBtn.disabled = true;
-    setHint(`${p.name} (IA) réfléchit…`);
-    setTimeout(() => rollDice(), 750);
+  if (mp.active) {
+    if (mp.role === 'client') {
+      updateOnlineControls();
+      return;
+    }
+    // Hôte
+    updateOnlineControls();
+    if (p.isAI) {
+      diceBtn.disabled = true;
+      setHint(`${p.name} (IA) réfléchit…`);
+      setTimeout(() => rollDice(), 750);
+    }
   } else {
-    diceBtn.disabled = false;
-    setHint('Cliquez sur le dé pour lancer');
+    // Mode local standard
+    if (p.isAI) {
+      diceBtn.disabled = true;
+      setHint(`${p.name} (IA) réfléchit…`);
+      setTimeout(() => rollDice(), 750);
+    } else {
+      diceBtn.disabled = false;
+      setHint('Cliquez sur le dé pour lancer');
+    }
   }
 }
 
@@ -363,16 +481,27 @@ function nextTurn(extraTurn) {
     state.current = n;
   }
   beginTurn();
+  if (mp.active && mp.role === 'host') broadcastState();
 }
 
 /* ---------- Lancer de dé ---------- */
 diceBtn.addEventListener('click', () => {
+  requestShakePermission();
   if (state.busy || state.rolled || currentPlayer().isAI) return;
   rollDice();
 });
 
 async function rollDice() {
   if (state.busy || state.rolled) return;
+
+  if (mp.active && mp.role === 'client') {
+    const conn = mp.conn[mp.roomCode];
+    if (conn && conn.open) {
+      conn.send({ type: 'ROLL_DICE' });
+    }
+    return;
+  }
+
   state.busy = true;
   state.rolled = true;
   diceBtn.disabled = true;
@@ -394,6 +523,10 @@ async function rollDice() {
 
   const p = currentPlayer();
   log(`<strong>${p.name}</strong> lance le dé : <strong>${value}</strong>`);
+
+  if (mp.active && mp.role === 'host') {
+    broadcastState();
+  }
 
   // règle des trois 6 consécutifs
   if (value === 6) {
@@ -470,6 +603,15 @@ function onTokenClick(pIdx, tIdx) {
   if (currentPlayer().isAI) return;
   const el = document.getElementById(tokenId(pIdx, tIdx));
   if (!el.classList.contains('movable')) return;
+
+  if (mp.active && mp.role === 'client') {
+    const conn = mp.conn[mp.roomCode];
+    if (conn && conn.open) {
+      conn.send({ type: 'MOVE_TOKEN', tIdx: tIdx });
+    }
+    return;
+  }
+
   moveToken(pIdx, tIdx);
 }
 
@@ -492,6 +634,7 @@ async function moveToken(pIdx, tIdx) {
     sfx.out();
     el.classList.add('hop');
     renderTokens();
+    if (mp.active && mp.role === 'host') broadcastState();
     log(`<strong>${p.name}</strong> sort un pion de sa base`);
     await sleep(320);
     el.classList.remove('hop');
@@ -502,6 +645,7 @@ async function moveToken(pIdx, tIdx) {
       sfx.step();
       el.classList.add('hop');
       renderTokens();
+      if (mp.active && mp.role === 'host') broadcastState();
       await sleep(230);
       el.classList.remove('hop');
     }
@@ -554,12 +698,14 @@ async function moveToken(pIdx, tIdx) {
         state.gameOver = true;
       }
       showVictory(p);
+      if (mp.active && mp.role === 'host') broadcastState();
       state.busy = false;
       return;
     }
   }
 
   renderPlayers();
+  if (mp.active && mp.role === 'host') broadcastState();
   state.busy = false;
   await sleep(250);
   nextTurn(extraTurn);
@@ -658,5 +804,439 @@ function showVictory(winner) {
   victoryModal.classList.add('show');
 }
 
+/* ==================== MULTIJOUEUR EN LIGNE (PEERJS) ==================== */
+function generateRoomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 4; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return 'LUDO-' + code;
+}
+
+const peerOptions = {
+  host: '0.peerjs.com',
+  secure: true,
+  port: 443,
+  debug: 1
+};
+
+// --- HÔTE (HOST) ---
+function initHost() {
+  mp.active = true;
+  mp.role = 'host';
+  mp.myColor = 'red';
+  mp.roomCode = generateRoomCode();
+  $('#room-code-display').textContent = mp.roomCode;
+
+  if (mp.peer) mp.peer.destroy();
+
+  mp.peer = new Peer(mp.roomCode, peerOptions);
+
+  mp.peer.on('open', () => {
+    log(`Salon créé. Code : <strong>${mp.roomCode}</strong> (Copiable en un clic)`, true);
+    // L'hôte est toujours le premier joueur (Rouge)
+    mp.players = [{ peerId: mp.peer.id, name: 'Hôte (Rouge)', color: 'red', isAI: false, connected: true }];
+    // Compléter les slots temporaires avec IA
+    fillLobbySlotsWithAI();
+    updateHostLobbyUI();
+  });
+
+  mp.peer.on('error', (err) => {
+    console.error(err);
+    if (err.type === 'unavailable-id') {
+      initHost(); // Si l'identifiant est déjà pris, on réessaie avec un autre code
+    } else {
+      log(`<span style="color:var(--red)">Erreur de création de salon : ${err.type}</span>`);
+    }
+  });
+
+  mp.peer.on('connection', (conn) => {
+    conn.on('open', () => {
+      conn.on('data', (data) => handleHostMessage(conn, data));
+    });
+    conn.on('close', () => {
+      handleClientDisconnection(conn.peer);
+    });
+    conn.on('error', () => {
+      handleClientDisconnection(conn.peer);
+    });
+  });
+}
+
+function fillLobbySlotsWithAI() {
+  const activeColors = COLOR_SETS[setupCount];
+  // Conserver les joueurs humains déjà connectés
+  const humanPlayers = mp.players.filter(p => !p.isAI);
+
+  mp.players = [...humanPlayers];
+
+  activeColors.forEach((color) => {
+    if (!mp.players.some(p => p.color === color)) {
+      mp.players.push({
+        peerId: 'AI-' + color,
+        name: `Joueur ${COLOR_NAMES[color]} (IA)`,
+        color: color,
+        isAI: true,
+        connected: true
+      });
+    }
+  });
+}
+
+function updateHostLobbyUI() {
+  const listEl = $('#online-connected-list');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  mp.players.forEach(p => {
+    const div = document.createElement('div');
+    div.className = 'connected-player';
+    div.innerHTML = `
+      <span class="dot ${p.color}" style="width:12px;height:12px;border-radius:50%;display:inline-block;background:var(--${p.color})"></span>
+      <span style="font-weight:600;margin-left:8px;flex:1">${p.name}</span>
+      <span class="tag" style="font-size:10px;padding:2px 6px;background:var(--bg);border-radius:4px">${p.isAI ? 'IA' : 'Humain'}</span>
+    `;
+    listEl.appendChild(div);
+  });
+}
+
+function broadcastLobby() {
+  Object.values(mp.conn).forEach(conn => {
+    if (conn.open) {
+      conn.send({
+        type: 'ROOM_UPDATE',
+        players: mp.players,
+        maxCount: setupCount
+      });
+    }
+  });
+}
+
+function broadcastState() {
+  if (mp.role !== 'host') return;
+  const serializedState = {
+    players: state.players.map(p => ({
+      color: p.color,
+      name: p.name,
+      isAI: p.isAI,
+      tokens: [...p.tokens],
+      finishedRank: p.finishedRank
+    })),
+    current: state.current,
+    dice: state.dice,
+    rolled: state.rolled,
+    sixCount: state.sixCount,
+    busy: state.busy,
+    gameOver: state.gameOver,
+    ranking: state.ranking.map(p => p.color) // On envoie les couleurs dans l'ordre de classement
+  };
+
+  Object.values(mp.conn).forEach(conn => {
+    if (conn.open) {
+      conn.send({
+        type: 'SYNC_STATE',
+        state: serializedState
+      });
+    }
+  });
+}
+
+function handleHostMessage(conn, data) {
+  if (data.type === 'JOIN') {
+    // Trouver le premier emplacement IA disponible pour le remplacer
+    const nextAiSlot = mp.players.find(p => p.isAI);
+    if (!nextAiSlot) {
+      conn.send({ type: 'ERROR', message: 'Le salon est complet.' });
+      conn.close();
+      return;
+    }
+
+    // Assigner la couleur et configurer la connexion
+    conn.color = nextAiSlot.color;
+    conn.playerName = data.name || `Joueur ${COLOR_NAMES[conn.color]}`;
+    mp.conn[conn.peer] = conn;
+
+    // Mettre à jour l'entrée dans le lobby
+    nextAiSlot.peerId = conn.peer;
+    nextAiSlot.name = conn.playerName;
+    nextAiSlot.isAI = false;
+    nextAiSlot.connected = true;
+
+    log(`<strong>${conn.playerName}</strong> a rejoint le salon !`, true);
+    updateHostLobbyUI();
+    broadcastLobby();
+  }
+
+  if (data.type === 'ROLL_DICE') {
+    const p = currentPlayer();
+    if (p.color === conn.color && !state.rolled && !state.busy) {
+      rollDice();
+    }
+  }
+
+  if (data.type === 'MOVE_TOKEN') {
+    const p = currentPlayer();
+    if (p.color === conn.color && state.rolled && !state.busy) {
+      const movable = getMovableTokens(state.current, state.dice);
+      if (movable.includes(data.tIdx)) {
+        moveToken(state.current, data.tIdx);
+      }
+    }
+  }
+}
+
+function handleClientDisconnection(peerId) {
+  const conn = mp.conn[peerId];
+  if (conn) {
+    log(`Le joueur <strong>${conn.playerName}</strong> s'est déconnecté.`, true);
+    delete mp.conn[peerId];
+
+    // Remplacer le joueur par une IA dans le lobby ou dans la partie en cours
+    const lobbyPlayer = mp.players.find(p => p.peerId === peerId);
+    if (lobbyPlayer) {
+      lobbyPlayer.peerId = 'AI-' + lobbyPlayer.color;
+      lobbyPlayer.name = `Joueur ${COLOR_NAMES[lobbyPlayer.color]} (IA)`;
+      lobbyPlayer.isAI = true;
+    }
+
+    if (gameScreen.classList.contains('active')) {
+      const pIdx = state.players.findIndex(p => p.color === conn.color);
+      if (pIdx !== -1) {
+        state.players[pIdx].isAI = true;
+        state.players[pIdx].name = `Joueur ${COLOR_NAMES[conn.color]} (IA)`;
+        renderPlayers();
+        // Si c'était son tour, l'IA prend le relais après un court délai
+        if (state.current === pIdx && !state.busy) {
+          if (!state.rolled) {
+            setTimeout(() => rollDice(), 750);
+          } else {
+            const movable = getMovableTokens(state.current, state.dice);
+            if (movable.length > 0) {
+              const choice = aiChooseMove(state.current, state.dice, movable);
+              setTimeout(() => moveToken(state.current, choice), 550);
+            } else {
+              nextTurn(state.dice === 6);
+            }
+          }
+        }
+      }
+      broadcastState();
+    } else {
+      updateHostLobbyUI();
+      broadcastLobby();
+    }
+  }
+}
+
+// --- CLIENT ---
+function initClient(roomCode, name) {
+  mp.active = true;
+  mp.role = 'client';
+  mp.roomCode = roomCode.toUpperCase().trim();
+
+  if (mp.peer) mp.peer.destroy();
+
+  const randomClientId = 'LUDO-CLIENT-' + Math.floor(Math.random() * 100000);
+  mp.peer = new Peer(randomClientId, peerOptions);
+
+  mp.peer.on('open', () => {
+    log(`Connexion au salon <strong>${mp.roomCode}</strong>...`);
+    const conn = mp.peer.connect(mp.roomCode);
+    mp.conn[mp.roomCode] = conn;
+
+    conn.on('open', () => {
+      log(`Connecté ! Envoi des informations d'inscription...`);
+      conn.send({ type: 'JOIN', name: name });
+    });
+
+    conn.on('data', (data) => handleClientMessage(data));
+
+    conn.on('close', () => {
+      alert("Déconnecté de l'hôte. Retour à la configuration.");
+      location.reload();
+    });
+
+    conn.on('error', (err) => {
+      console.error(err);
+      alert(`Erreur de connexion : ${err}`);
+      location.reload();
+    });
+  });
+
+  mp.peer.on('error', (err) => {
+    console.error(err);
+    alert(`Erreur Peer : ${err.type}`);
+    location.reload();
+  });
+}
+
+function handleClientMessage(data) {
+  if (data.type === 'ERROR') {
+    alert(data.message);
+    location.reload();
+  }
+
+  if (data.type === 'ROOM_UPDATE') {
+    setupCount = data.maxCount;
+    mp.players = data.players;
+
+    const selfPlayer = mp.players.find(p => p.peerId === mp.peer.id);
+    if (selfPlayer) {
+      mp.myColor = selfPlayer.color;
+    }
+    updateClientLobbyUI();
+  }
+
+  if (data.type === 'START_GAME') {
+    setupScreen.classList.remove('active');
+    gameScreen.classList.add('active');
+    logEl.innerHTML = '';
+
+    buildBoard();
+    createTokens();
+    renderPlayers();
+    log('La partie commence en ligne !', true);
+  }
+
+  if (data.type === 'SYNC_STATE') {
+    // Mettre à jour l'état de jeu avec celui reçu de l'hôte
+    state.current = data.state.current;
+    state.dice = data.state.dice;
+    state.rolled = data.state.rolled;
+    state.sixCount = data.state.sixCount;
+    state.busy = data.state.busy;
+    state.gameOver = data.state.gameOver;
+
+    // Mettre à jour la face du dé visuellement
+    diceFace.dataset.v = String(state.dice || 6);
+
+    // Reconstruire les joueurs
+    state.players = data.state.players.map(p => ({
+      color: p.color,
+      name: p.name,
+      isAI: p.isAI,
+      tokens: [...p.tokens],
+      finishedRank: p.finishedRank
+    }));
+
+    // Reconstruire le classement final
+    state.ranking = data.state.ranking.map(color => state.players.find(p => p.color === color));
+
+    renderTokens();
+    renderPlayers();
+    updateOnlineControls();
+
+    if (state.gameOver) {
+      const winner = state.ranking[0];
+      showVictory(winner);
+    }
+  }
+}
+
+function updateClientLobbyUI() {
+  const listEl = $('#online-connected-list');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+
+  mp.players.forEach(p => {
+    const isMe = p.peerId === mp.peer.id;
+    const div = document.createElement('div');
+    div.className = 'connected-player';
+    div.innerHTML = `
+      <span class="dot ${p.color}" style="width:12px;height:12px;border-radius:50%;display:inline-block;background:var(--${p.color})"></span>
+      <span style="font-weight:600;margin-left:8px;flex:1">${p.name} ${isMe ? '<strong>(Vous)</strong>' : ''}</span>
+      <span class="tag" style="font-size:10px;padding:2px 6px;background:var(--bg);border-radius:4px">${p.isAI ? 'IA' : 'Humain'}</span>
+    `;
+    listEl.appendChild(div);
+  });
+}
+
+function updateOnlineControls() {
+  const p = currentPlayer();
+  const isMyTurn = p.color === mp.myColor;
+
+  if (isMyTurn) {
+    turnLabel.innerHTML = `À votre tour (<span style="color: var(--${p.color})">Votre pion</span>)`;
+    if (!state.rolled) {
+      diceBtn.disabled = false;
+      setHint('Cliquez sur le dé ou secouez votre téléphone pour lancer !');
+    } else {
+      diceBtn.disabled = true;
+      const movable = getMovableTokens(state.current, state.dice);
+      highlightMovable(movable);
+      setHint('Choisissez un pion à déplacer');
+    }
+  } else {
+    turnLabel.innerHTML = `Au tour de <strong style="color: var(--${p.color})">${p.name}</strong>`;
+    diceBtn.disabled = true;
+    clearMovable();
+    setHint(`En attente de ${p.name}...`);
+  }
+}
+
+/* ==================== CAPTEUR DE SECOUEMENT (SHAKE TO ROLL) ==================== */
+let lastX = null, lastY = null, lastZ = null;
+const shakeThreshold = 15; // Seuil d'accélération en m/s^2
+let lastShakeTime = 0;
+
+function handleDeviceMotion(event) {
+  if (state.busy || state.rolled || state.gameOver) return;
+
+  const p = currentPlayer();
+  if (p.isAI) return;
+  if (mp.active && p.color !== mp.myColor) return;
+
+  const acc = event.accelerationIncludingGravity;
+  if (!acc) return;
+
+  const x = acc.x;
+  const y = acc.y;
+  const z = acc.z;
+
+  if (lastX !== null) {
+    const deltaX = Math.abs(x - lastX);
+    const deltaY = Math.abs(y - lastY);
+    const deltaZ = Math.abs(z - lastZ);
+
+    if ((deltaX > shakeThreshold && deltaY > shakeThreshold) ||
+        (deltaX > shakeThreshold && deltaZ > shakeThreshold) ||
+        (deltaY > shakeThreshold && deltaZ > shakeThreshold)) {
+      const now = Date.now();
+      if (now - lastShakeTime > 1500) {
+        lastShakeTime = now;
+        if (navigator.vibrate) {
+          navigator.vibrate(200);
+        }
+        rollDice();
+      }
+    }
+  }
+
+  lastX = x;
+  lastY = y;
+  lastZ = z;
+}
+
+function initShakeDetection() {
+  if (typeof DeviceMotionEvent === 'undefined' || typeof DeviceMotionEvent.requestPermission !== 'function') {
+    // Navigateurs Android et de bureau non-iOS
+    window.addEventListener('devicemotion', handleDeviceMotion, true);
+  }
+}
+
+function requestShakePermission() {
+  if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+    DeviceMotionEvent.requestPermission()
+      .then((permissionState) => {
+        if (permissionState === 'granted') {
+          window.addEventListener('devicemotion', handleDeviceMotion, true);
+          log('Capteur de secouement activé avec succès !', true);
+        }
+      })
+      .catch(console.error);
+  }
+}
+
 /* ==================== INIT ==================== */
+initShakeDetection();
 renderSetup();

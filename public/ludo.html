@@ -8,6 +8,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0d0f14" />
+  <link rel="apple-touch-icon" href="/apple-icon.png" />
   <link rel="stylesheet" href="/ludo.css" />
 </head>
 <body>
@@ -32,20 +35,70 @@
       <p class="subtitle">Le jeu de plateau classique, réinventé avec élégance</p>
 
       <div class="setup-section">
-        <h2>Nombre de joueurs</h2>
-        <div class="count-buttons" role="radiogroup" aria-label="Nombre de joueurs">
-          <button class="count-btn" data-count="2">2</button>
-          <button class="count-btn" data-count="3">3</button>
-          <button class="count-btn active" data-count="4">4</button>
+        <h2>Mode de jeu</h2>
+        <div class="mode-buttons" role="radiogroup" aria-label="Mode de jeu">
+          <button class="mode-btn active" id="btn-mode-local">Local</button>
+          <button class="mode-btn" id="btn-mode-online">En Ligne</button>
         </div>
       </div>
 
-      <div class="setup-section">
-        <h2>Joueurs</h2>
-        <div id="player-config" class="player-config"></div>
+      <!-- CONFIGURATION LOCAL -->
+      <div id="local-setup">
+        <div class="setup-section">
+          <h2>Nombre de joueurs</h2>
+          <div class="count-buttons" role="radiogroup" aria-label="Nombre de joueurs">
+            <button class="count-btn" data-count="2">2</button>
+            <button class="count-btn" data-count="3">3</button>
+            <button class="count-btn active" data-count="4">4</button>
+          </div>
+        </div>
+
+        <div class="setup-section">
+          <h2>Joueurs</h2>
+          <div id="player-config" class="player-config"></div>
+        </div>
       </div>
 
-      <button id="start-btn" class="start-btn">Commencer la partie</button>
+      <!-- CONFIGURATION EN LIGNE -->
+      <div id="online-setup" style="display: none;">
+        <div class="setup-section">
+          <h2>Créer ou Rejoindre</h2>
+          <div class="online-choice-buttons">
+            <button class="choice-btn active" id="btn-choose-host">Créer un salon</button>
+            <button class="choice-btn" id="btn-choose-join">Rejoindre un salon</button>
+          </div>
+        </div>
+
+        <!-- Sous-section HÔTE -->
+        <div id="online-host-pane" class="online-pane">
+          <div class="setup-section">
+            <h2>Code du salon</h2>
+            <div class="code-box">
+              <span id="room-code-display">Création...</span>
+              <button id="btn-copy-code" class="copy-btn" title="Copier le code">Copier</button>
+            </div>
+          </div>
+          <div class="setup-section">
+            <h2>Joueurs connectés (Lobby)</h2>
+            <div id="online-connected-list" class="connected-list"></div>
+          </div>
+        </div>
+
+        <!-- Sous-section REJOINDRE -->
+        <div id="online-join-pane" class="online-pane" style="display: none;">
+          <div class="setup-section">
+            <h2>Entrer le code du salon</h2>
+            <input type="text" id="room-code-input" class="text-input" placeholder="Ex: LUDO-XXXX" />
+          </div>
+          <div class="setup-section">
+            <h2>Votre Pseudo</h2>
+            <input type="text" id="player-name-input" class="text-input" placeholder="Pseudo" maxlength="12" />
+          </div>
+          <button id="join-btn" class="start-btn" style="margin-top: 10px;">Rejoindre le salon</button>
+        </div>
+      </div>
+
+      <button id="start-btn" class="start-btn" style="margin-top: 15px;">Commencer la partie</button>
     </div>
   </div>
 
@@ -109,6 +162,14 @@
     </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js" integrity="sha384-nlUQ8ZqCbvStErob+biJNzSgltf6urV3VGqhfIfzhmg9RXmpeRm76ELw0pYnKlTR" crossorigin="anonymous"></script>
   <script src="/ludo.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW registration failed:', err));
+      });
+    }
+  </script>
 </body>
 </html>
