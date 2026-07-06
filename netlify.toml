@@ -1,0 +1,4 @@
+# Configuration Netlify pour Ludo Royal (Next.js)
+# L'adaptateur OpenNext est géré automatiquement par Netlify
+[build]
+  command = "pnpm build"

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ludo Royal — Jeu de Ludo Premium</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/ludo.css" />
+</head>
+<body>
+  <!-- ÉCRAN D'ACCUEIL / CONFIGURATION -->
+  <div id="setup-screen" class="screen active">
+    <div class="setup-card">
+      <div class="logo-crown" aria-hidden="true">
+        <svg viewBox="0 0 64 40" width="64" height="40" fill="none">
+          <path d="M4 34 L8 12 L20 24 L32 4 L44 24 L56 12 L60 34 Z" fill="url(#gold)" stroke="#b8912f" stroke-width="1.5"/>
+          <circle cx="8" cy="10" r="3" fill="#f4d06f"/>
+          <circle cx="32" cy="4" r="3.5" fill="#f4d06f"/>
+          <circle cx="56" cy="10" r="3" fill="#f4d06f"/>
+          <defs>
+            <linearGradient id="gold" x1="0" y1="0" x2="0" y2="40">
+              <stop offset="0" stop-color="#f4d06f"/>
+              <stop offset="1" stop-color="#c9a13b"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <h1 class="title">Ludo <span>Royal</span></h1>
+      <p class="subtitle">Le jeu de plateau classique, réinventé avec élégance</p>
+
+      <div class="setup-section">
+        <h2>Nombre de joueurs</h2>
+        <div class="count-buttons" role="radiogroup" aria-label="Nombre de joueurs">
+          <button class="count-btn" data-count="2">2</button>
+          <button class="count-btn" data-count="3">3</button>
+          <button class="count-btn active" data-count="4">4</button>
+        </div>
+      </div>
+
+      <div class="setup-section">
+        <h2>Joueurs</h2>
+        <div id="player-config" class="player-config"></div>
+      </div>
+
+      <button id="start-btn" class="start-btn">Commencer la partie</button>
+    </div>
+  </div>
+
+  <!-- ÉCRAN DE JEU -->
+  <div id="game-screen" class="screen">
+    <header class="game-header">
+      <div class="header-brand">
+        <svg viewBox="0 0 64 40" width="32" height="20" fill="none" aria-hidden="true">
+          <path d="M4 34 L8 12 L20 24 L32 4 L44 24 L56 12 L60 34 Z" fill="#e3b94d"/>
+        </svg>
+        <span>Ludo Royal</span>
+      </div>
+      <div class="header-actions">
+        <button id="sound-btn" class="icon-btn" aria-label="Activer ou couper le son" title="Son">
+          <svg id="sound-on-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
+          <svg id="sound-off-icon" style="display:none" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>
+        </button>
+        <button id="restart-btn" class="icon-btn" aria-label="Nouvelle partie" title="Nouvelle partie">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="game-layout">
+      <div class="board-wrap">
+        <div id="board" class="board" aria-label="Plateau de Ludo"></div>
+      </div>
+
+      <aside class="side-panel">
+        <div id="players-list" class="players-list"></div>
+
+        <div class="dice-panel glass">
+          <div id="turn-label" class="turn-label">—</div>
+          <div class="dice-zone">
+            <button id="dice" class="dice" aria-label="Lancer le dé">
+              <div class="dice-face" id="dice-face"></div>
+            </button>
+          </div>
+          <div id="hint" class="hint">Lancez le dé pour commencer</div>
+        </div>
+
+        <div id="log" class="log glass" aria-live="polite"></div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- MODALE DE VICTOIRE -->
+  <div id="victory-modal" class="modal-overlay">
+    <div class="modal glass">
+      <div class="confetti" aria-hidden="true"></div>
+      <div class="trophy" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="72" height="72" fill="none" stroke="#e3b94d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" fill="rgba(227,185,77,0.15)"/></svg>
+      </div>
+      <h2 id="victory-title">Victoire !</h2>
+      <p id="victory-text"></p>
+      <div id="ranking" class="ranking"></div>
+      <div class="modal-actions">
+        <button id="continue-btn" class="btn-secondary">Continuer la partie</button>
+        <button id="new-game-btn" class="start-btn">Nouvelle partie</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/ludo.js"></script>
+</body>
+</html>
