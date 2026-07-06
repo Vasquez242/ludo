@@ -435,6 +435,15 @@ function setHint(t) { hintEl.textContent = t; }
 /* ==================== DÉMARRAGE ==================== */
 function startGame() {
   if (mp.active && mp.role === 'host') {
+    if (!mp.peer || !mp.peer.open) {
+      alert('Le salon n\'est pas encore prêt. Patientez une seconde puis réessayez.');
+      return;
+    }
+    if (!mp.players || mp.players.length === 0) {
+      mp.players = [{ peerId: mp.peer.id, name: 'Hôte (Rouge)', color: 'red', isAI: false, connected: true }];
+      fillLobbySlotsWithAI();
+    }
+
     Object.values(mp.conn).forEach(conn => {
       if (conn.open) {
         conn.send({ type: 'START_GAME' });
@@ -477,7 +486,9 @@ function startGame() {
 }
 
 /* ==================== LOGIQUE DES TOURS ==================== */
-function currentPlayer() { return state.players[state.current]; }
+function currentPlayer() {
+  return state.players[state.current] || null;
+}
 
 function beginTurn() {
   if (state.gameOver) return;
@@ -1316,17 +1327,36 @@ function initShakeDetection() {
   // Désactivé par défaut. L'activation dynamique se fait dans beginTurn()
 }
 
+function enableShakeListener() {
+  const p = currentPlayer();
+  if (!p || p.isAI || state.rolled || state.busy || state.gameOver) return;
+  if (mp.active && p.color !== mp.myColor) return;
+  window.removeEventListener('devicemotion', handleDeviceMotion, true);
+  lastX = null; lastY = null; lastZ = null;
+  window.addEventListener('devicemotion', handleDeviceMotion, true);
+}
+
+function disableShakeListener() {
+  window.removeEventListener('devicemotion', handleDeviceMotion, true);
+}
+
+let shakePermissionAsked = false;
 function requestShakePermission() {
-  if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
-    DeviceMotionEvent.requestPermission()
-      .then((permissionState) => {
-        if (permissionState === 'granted') {
-          enableShakeListener();
-          log('Capteur de secouement activé avec succès !', true);
-        }
-      })
-      .catch(console.error);
+  if (typeof DeviceMotionEvent === 'undefined') return;
+  if (typeof DeviceMotionEvent.requestPermission !== 'function') {
+    enableShakeListener();
+    return;
   }
+  if (shakePermissionAsked) return;
+  shakePermissionAsked = true;
+  DeviceMotionEvent.requestPermission()
+    .then((permissionState) => {
+      if (permissionState === 'granted') {
+        enableShakeListener();
+        log('Capteur de secouement activé avec succès !', true);
+      }
+    })
+    .catch((e) => console.warn('Shake permission denied or failed', e));
 }
 
 function checkUrlParams() {
