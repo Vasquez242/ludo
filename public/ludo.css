@@ -1058,83 +1058,133 @@ button { -webkit-tap-highlight-color: transparent; }
   to { transform: translateY(560px) rotate(720deg); }
 }
 
-/* ============ Responsive ============ */
-@media (max-width: 860px) {
-  .game-layout {
-    padding: 8px;
-    gap: 12px;
-    flex-direction: column;
-    align-items: center;
-  }
-  .board-wrap {
-    width: 100%;
-    max-width: clamp(280px, 92vw, 75vh - 240px);
-  }
-  .side-panel {
-    width: 100%;
-    max-width: clamp(280px, 92vw, 75vh - 240px);
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .players-list {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-    width: 100%;
-  }
-  .player-card {
-    padding: 6px 10px;
-    gap: 8px;
-    border-radius: 10px;
-  }
-  .player-card .name {
-    font-size: 13px;
-  }
-  .player-card .progress {
-    margin-top: 3px;
-  }
-  .player-card .pip {
-    width: 7px;
-    height: 7px;
-  }
-  .dice-panel {
-    flex: 1 1 120px;
-    padding: 8px 12px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-  }
-  .turn-label {
-    font-size: 12px;
-    margin-bottom: 6px;
-  }
-  .dice-zone {
-    transform: scale(0.75);
-    margin: -5px 0;
-  }
-  .hint {
-    margin-top: 4px;
-    font-size: 11px;
-  }
-  .log {
-    flex: 1.5 1 150px;
-    height: 96px;
-    max-height: 96px;
-    padding: 8px 12px;
-    border-radius: var(--radius);
-  }
-  .title { font-size: 32px; }
-  .subtitle { margin-bottom: 20px; }
-  .setup-card { padding: 24px 20px; }
+/* ============ Responsive — MOBILE FIRST ============ */
+/* Base styles assume MOBILE (< 768px) — on construit depuis le plus petit */
+
+/* Layout principal : TOUJOURS en colonne sur mobile (board en haut, contrôles en bas) */
+.game-layout {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  box-sizing: border-box;
 }
 
-@media (max-width: 400px) {
+/* Plateau : prend la largeur disponible mais ne dépasse pas la hauteur utile */
+.board-wrap {
+  width: min(94vw, 60dvh);
+  max-width: 480px;
+  aspect-ratio: 1 / 1;
+  flex-shrink: 0;
+}
+
+/* PANNEAU LATÉRAL : TOUJOURS en colonne (pas de flex-wrap horizontal) */
+.side-panel {
+  width: 100%;
+  max-width: min(94vw, 480px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+}
+
+/* Liste joueurs : grille 2x2 sur mobile */
+.players-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  width: 100%;
+}
+
+/* Cartes joueurs : compactes sur mobile */
+.player-card {
+  padding: 6px 10px;
+  gap: 8px;
+  border-radius: 10px;
+}
+.player-card .name { font-size: 13px; }
+.player-card .progress { margin-top: 3px; }
+.player-card .pip { width: 7px; height: 7px; }
+
+/* Panneau dé : compact */
+.dice-panel {
+  width: 100%;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.turn-label { font-size: 12px; margin-bottom: 6px; }
+.dice-zone { transform: scale(0.75); margin: -5px 0; }
+.hint { margin-top: 4px; font-size: 11px; }
+
+/* Log + chat : pleine largeur, hauteur contrôlée */
+.log {
+  width: 100%;
+  height: 80px;
+  max-height: 80px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.chat-panel {
+  width: 100%;
+  max-height: 200px;
+  box-sizing: border-box;
+}
+.chat-messages { max-height: 100px; min-height: 50px; }
+
+/* Setup card : padding réduit */
+.title { font-size: 32px; }
+.subtitle { margin-bottom: 20px; }
+.setup-card { padding: 24px 20px; }
+
+/* Très petits écrans (< 380px) : resserrer encore */
+@media (max-width: 380px) {
+  .board-wrap { width: min(96vw, 60dvh); }
+  .side-panel { max-width: 96vw; }
+  .title { font-size: 26px; }
+  .player-card { padding: 5px 8px; }
+}
+
+/* TABLET (≥ 768px) : passe en row layout (plateau à gauche, panneau à droite) */
+@media (min-width: 768px) {
+  .game-layout {
+    flex-direction: row;
+    padding: 24px;
+    gap: 24px;
+    align-items: flex-start;
+    justify-content: center;
+  }
   .board-wrap {
-    max-width: 95vw;
+    flex: 1 1 auto;
+    width: auto;
+    max-width: min(78vh, 680px);
   }
   .side-panel {
-    max-width: 95vw;
+    width: 300px;
+    max-width: 300px;
+    flex-shrink: 0;
   }
+  .players-list { display: flex; flex-direction: column; gap: 10px; grid-template-columns: none; }
+  .player-card { padding: 12px 16px; gap: 12px; }
+  .player-card .name { font-size: 14.5px; }
+  .player-card .pip { width: 9px; height: 9px; }
+  .dice-zone { transform: none; margin: 0; }
+  .log { height: 180px; max-height: 180px; padding: 14px 16px; }
+  .chat-messages { max-height: 140px; }
+  .title { font-size: 44px; }
+  .setup-card { padding: 40px 36px; }
+}
+
+/* DESKTOP (≥ 1024px) : encore plus aéré */
+@media (min-width: 1024px) {
+  .game-layout { padding: 32px; }
 }

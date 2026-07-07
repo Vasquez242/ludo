@@ -1025,43 +1025,32 @@ function createTokens() {
   applyTokenSkin();
 }
 
-// Batched render via requestAnimationFrame pour éviter les reflows multiples
-const renderTokens = (() => {
-  let pending = false;
-  function flush() {
-    pending = false;
-    doRender();
+// Render synchrone des pions (le batching RAF peut masquer les pions sur mobile
+// si la frame est retardée ou si requestAnimationFrame n'est pas disponible).
+function renderTokens() {
+  if (document.querySelectorAll('.token').length === 0 && state.players.length > 0) {
+    createTokens();
+    return;
   }
-  function doRender() {
-    if (document.querySelectorAll('.token').length === 0 && state.players.length > 0) {
-      createTokens();
-      return;
-    }
-    const groups = {};
-    state.players.forEach((p, pIdx) => {
-      p.tokens.forEach((pos, tIdx) => {
-        const [r, c] = coordFor(p.color, pos, tIdx);
-        const key = pos === -1 ? `base-${pIdx}-${tIdx}` : `${r},${c}`;
-        (groups[key] = groups[key] || []).push({ pIdx, tIdx, r, c, pos });
-      });
+  const groups = {};
+  state.players.forEach((p, pIdx) => {
+    p.tokens.forEach((pos, tIdx) => {
+      const [r, c] = coordFor(p.color, pos, tIdx);
+      const key = pos === -1 ? `base-${pIdx}-${tIdx}` : `${r},${c}`;
+      (groups[key] = groups[key] || []).push({ pIdx, tIdx, r, c, pos });
     });
-    Object.values(groups).forEach((items) => {
-      items.forEach(({ pIdx, tIdx, r, c, pos }, i) => {
-        const el = document.getElementById(tokenId(pIdx, tIdx));
-        if (!el) return;
-        const [or, oc] = items.length > 1 ? STACK_OFFSETS[Math.min(i, 4)] : [0, 0];
-        el.style.top = `${((r + 0.11 + or) / 15) * 100}%`;
-        el.style.left = `${((c + 0.11 + oc) / 15) * 100}%`;
-        el.classList.toggle('finished', pos === FINISH_POS);
-      });
+  });
+  Object.values(groups).forEach((items) => {
+    items.forEach(({ pIdx, tIdx, r, c, pos }, i) => {
+      const el = document.getElementById(tokenId(pIdx, tIdx));
+      if (!el) return;
+      const [or, oc] = items.length > 1 ? STACK_OFFSETS[Math.min(i, 4)] : [0, 0];
+      el.style.top = `${((r + 0.11 + or) / 15) * 100}%`;
+      el.style.left = `${((c + 0.11 + oc) / 15) * 100}%`;
+      el.classList.toggle('finished', pos === FINISH_POS);
     });
-  }
-  return function renderTokens() {
-    if (pending) return;
-    pending = true;
-    requestAnimationFrame(flush);
-  };
-})();
+  });
+}
 
 /* ==================== PANNEAU LATÉRAL ==================== */
 function renderPlayers() {
