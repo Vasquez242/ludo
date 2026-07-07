@@ -963,6 +963,7 @@ const ARROW_SVGS = {
 };
 
 function buildBoard() {
+  console.log('[INSTRUMENT] buildBoard() CALLED');
   boardEl.innerHTML = '';
 
   // Bases (4 coins)
@@ -1024,6 +1025,7 @@ function coordFor(color, pos, tokenIdx) {
 function tokenId(pIdx, tIdx) { return `token-${pIdx}-${tIdx}`; }
 
 function createTokens() {
+  console.log('[INSTRUMENT] createTokens() CALLED players=' + state.players.length);
   document.querySelectorAll('.token').forEach((t) => t.remove());
   state.players.forEach((p, pIdx) => {
     p.tokens.forEach((_, tIdx) => {
@@ -1047,6 +1049,7 @@ function renderTokens() {
     expectedTokenCount += p.tokens.length;
   });
   if (document.querySelectorAll('.token').length !== expectedTokenCount && state.players.length > 0) {
+    console.log('[INSTRUMENT] renderTokens() SHORT-CIRCUIT → createTokens() (dom=' + document.querySelectorAll('.token').length + ', expected=' + expectedTokenCount + ')');
     createTokens();
     return;
   }
@@ -2325,6 +2328,19 @@ function initClient(roomCode, name) {
 }
 
 function handleClientMessage(data) {
+  // [INSTRUMENT] Log all incoming message types
+  console.log('[INSTRUMENT] RECEIVED type=' + data.type);
+  // [INSTRUMENT] Check gameScreen active state
+  console.log('[INSTRUMENT] gameScreen.hasClass(active)=' + gameScreen.classList.contains('active'));
+  // [INSTRUMENT] Log multiplayer state
+  console.log('[INSTRUMENT] mp.role=' + mp.role + ', mp.active=' + mp.active);
+  // [INSTRUMENT] Log players state
+  const expectedPions = state.players.reduce((sum, p) => sum + (p.tokens ? p.tokens.length : 0), 0);
+  console.log('[INSTRUMENT] state.players.length=' + state.players.length + ', expectedPions=' + expectedPions);
+  // [INSTRUMENT] Check token DOM elements
+  const tokenCount = document.querySelectorAll('.token').length;
+  console.log('[INSTRUMENT] .token count in DOM=' + tokenCount + ', expected=' + expectedPions);
+
   if (data.type === 'ERROR') {
     log(`<span style="color:var(--red)">${data.message}</span>`);
     return;
@@ -2395,6 +2411,7 @@ function handleClientMessage(data) {
     state.dice = data.state.dice;
     state.rolled = data.state.rolled;
     state.sixCount = data.state.sixCount;
+    // state.busy géré localement - ne PAS écraser depuis l'hôte pour éviter de figer le client
     state.gameOver = data.state.gameOver;
 
     // Mettre à jour la face du dé visuellement
@@ -2492,6 +2509,12 @@ function updateClientLobbyUI() {
 
 function updateOnlineControls() {
   const p = currentPlayer();
+  if (!p) return;
+  // En mode spectateur, le dé est toujours désactivé
+  if (mp.role === 'spectator') {
+    diceBtn.disabled = true;
+    return;
+  }
   const isMyTurn = p.color === mp.myColor;
 
   if (isMyTurn) {
