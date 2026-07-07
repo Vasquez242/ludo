@@ -407,11 +407,28 @@ const chat = {
   messages: [],
   listeners: new Set(),
 };
+function chatGetDisplayName() {
+  // Nom à afficher devant les messages. Priorité au nom choisi par l'utilisateur.
+  if (mp.role === 'host') return mp.players.find(p => p.peerId === mp.peer?.id)?.name || 'Hôte';
+  if (mp.role === 'client') {
+    const self = mp.players.find(p => p.color === mp.myColor);
+    return self?.name || 'Joueur';
+  }
+  return 'Spectateur';
+}
+
 function chatSend(text) {
   if (!mp.active) return;
   const trimmed = text.trim().slice(0, 200);
   if (!trimmed) return;
-  const msg = { from: mp.role === 'host' ? 'Hôte' : (mp.role === 'client' ? 'Moi' : 'Spectateur'), text: trimmed, at: Date.now() };
+  const isEmojiOnly = /^[\p{Emoji_Presentation}\p{Extended_Pictographic}\s]+$/u.test(trimmed);
+  const msg = {
+    from: chatGetDisplayName(),
+    color: mp.myColor || (mp.role === 'host' ? 'red' : 'green'),
+    text: trimmed,
+    emojiOnly: isEmojiOnly,
+    at: Date.now()
+  };
   chat.messages.push(msg);
   if (chat.messages.length > 60) chat.messages.shift();
   renderChatMessages();
@@ -424,8 +441,24 @@ function chatSend(text) {
 function renderChatMessages() {
   const el = $('#chat-messages');
   if (!el) return;
-  el.innerHTML = chat.messages.slice(-20).map(m => `<div class="chat-msg"><strong>${escapeHtml(m.from)}:</strong>${escapeHtml(m.text)}</div>`).join('');
+  const myKey = mp.role === 'host'
+    ? mp.peer?.id
+    : (mp.myColor || mp.roomCode);
+  el.innerHTML = chat.messages.slice(-30).map(m => {
+    const isMine = (mp.role === 'host' && m.color === 'red') ||
+                   (mp.role === 'client' && m.color === mp.myColor);
+    const cls = isMine ? 'chat-msg me' : 'chat-msg';
+    const colorDot = `<span class="chat-dot" style="background: var(--${m.color || 'gold'}); width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle;"></span>`;
+    if (m.emojiOnly) {
+      return `<div class="${cls}">${colorDot}<span style="font-size:20px">${escapeHtml(m.text)}</span></div>`;
+    }
+    return `<div class="${cls}">${colorDot}<strong>${escapeHtml(m.from)}</strong>${escapeHtml(m.text)}</div>`;
+  }).join('');
   el.scrollTop = el.scrollHeight;
+}
+function showChat(show) {
+  const panel = $('#chat-panel');
+  if (panel) panel.style.display = show ? 'flex' : 'none';
 }
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -700,16 +733,43 @@ $('#start-btn').addEventListener('click', () => {
   requestShakePermission();
   startGame();
 });
-$('#restart-btn').addEventListener('click', () => {
-  victoryModal.classList.remove('show');
-  gameScreen.classList.remove('active');
-  setupScreen.classList.add('active');
-});
 $('#new-game-btn').addEventListener('click', () => {
+  resetMultiplayer();
   victoryModal.classList.remove('show');
   gameScreen.classList.remove('active');
   setupScreen.classList.add('active');
 });
+$('#restart-btn').addEventListener('click', () => {
+  resetMultiplayer();
+  victoryModal.classList.remove('show');
+  gameScreen.classList.remove('active');
+  setupScreen.classList.add('active');
+});
+
+/* Reset complet de l'état multi-joueur (Peer, chat, reconnexion) */
+function resetMultiplayer() {
+  if (mp.peer) {
+    try { mp.peer.destroy(); } catch (e) {}
+    mp.peer = null;
+  }
+  mp.active = false;
+  mp.role = 'local';
+  mp.conn = {};
+  mp.roomCode = null;
+  mp.myColor = 'red';
+  mp.myReconnectToken = null;
+  mp.players = [];
+  // Vider le chat
+  chat.messages = [];
+  const chatEl = $('#chat-messages');
+  if (chatEl) chatEl.innerHTML = '';
+  showChat(false);
+  clientRetryCount = 0;
+  hostRetryCount = 0;
+  brokerIndex = 0;
+  clearBrokerTimeout();
+  clearNetworkError();
+}
 $('#continue-btn').addEventListener('click', () => {
   victoryModal.classList.remove('show');
   if (!state.gameOver) nextTurn(false);
@@ -734,8 +794,23 @@ $('#chat-send').addEventListener('click', () => {
   if (!inp.value.trim()) return;
   chatSend(inp.value);
   inp.value = '';
+  // Fermer le panneau d'émojis après envoi
+  const bar = $('#chat-emoji-bar');
+  if (bar) bar.classList.remove('open');
 });
-$('#chat-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') $('#chat-send').click(); });
+$('#chat-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#chat-send').click(); } });
+$('#chat-emoji-toggle').addEventListener('click', () => {
+  const bar = $('#chat-emoji-bar');
+  if (bar) bar.classList.toggle('open');
+});
+document.querySelectorAll('.chat-emoji-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const inp = $('#chat-input');
+    const emoji = btn.dataset.emoji;
+    inp.value += emoji;
+    inp.focus();
+  });
+});
 $('#replay-prev').addEventListener('click', () => {
   if (replay.index > 0) { replay.index--; renderReplayFromIndex(replay.index); }
 });
@@ -998,10 +1073,11 @@ function renderPlayers() {
     if (p.finishedRank > 0) card.classList.add('done-player');
     const pips = p.tokens.map((t) => `<span class="pip ${t === FINISH_POS ? 'done' : ''}"></span>`).join('');
     const medal = p.finishedRank > 0 ? `<span class="medal">${p.finishedRank}ᵉ</span>` : '';
+    const displayLabel = shortPlayerLabel(p, i);
     card.innerHTML = `
       <span class="dot ${p.color}"></span>
       <div class="info">
-        <div class="name">${p.name} <span class="tag">${p.isAI ? 'IA' : 'Humain'}</span> ${medal}</div>
+        <div class="name">${escapeHtml(displayLabel)} <span class="tag">${p.isAI ? 'IA' : 'Humain'}</span> ${medal}</div>
         <div class="progress">${pips}</div>
       </div>`;
     playersListEl.appendChild(card);
@@ -1023,6 +1099,15 @@ function log(msg, gold = false) {
 }
 
 function setHint(t) { hintEl.textContent = t; }
+
+/* Helper : libellé court d'un joueur selon le mode de jeu */
+function shortPlayerLabel(player, index) {
+  if (setupCount === 2 && player && !player.isAI) {
+    const humanIdx = state.players.slice(0, index + 1).filter(p => !p.isAI).length;
+    return `J${humanIdx}`;
+  }
+  return (player && player.name) || `Joueur ${index + 1}`;
+}
 
 /* ==================== DÉMARRAGE ==================== */
 function startGame() {
@@ -1052,7 +1137,8 @@ function startGame() {
       wasCaptured: false,
     }));
   } else {
-    state.players = COLOR_SETS[setupCount].map((color) => ({
+    // Mode local : utilise setupTypes
+    state.players = COLOR_SETS[setupCount].map((color, idx) => ({
       color,
       name: COLOR_NAMES[color],
       isAI: setupTypes[color] === 'ai',
@@ -1061,6 +1147,16 @@ function startGame() {
       captures: 0,
       wasCaptured: false,
     }));
+    // En mode 2 joueurs, renommer les joueurs humains en J1/J2 (sans toucher aux IA)
+    if (setupCount === 2) {
+      let humanIdx = 0;
+      state.players.forEach((p) => {
+        if (!p.isAI) {
+          humanIdx++;
+          p.name = `J${humanIdx}`;
+        }
+      });
+    }
   }
   state.current = 0;
   state.dice = 0;
@@ -1070,10 +1166,16 @@ function startGame() {
   state.gameOver = false;
   state.ranking = [];
   state.totalMoves = 0;
+  chat.messages = [];
+  const chatEl = $('#chat-messages');
+  if (chatEl) chatEl.innerHTML = '';
 
   setupScreen.classList.remove('active');
   gameScreen.classList.add('active');
   logEl.innerHTML = '';
+
+  // Afficher le chat uniquement en multi
+  showChat(mp.active && mp.role !== 'spectator');
 
   buildBoard();
   createTokens();
@@ -1637,7 +1739,15 @@ function initHost() {
     clearBrokerTimeout();
     clearNetworkError();
     log(`Salon créé via ${broker.name}. Code : <strong>${mp.roomCode}</strong>`, true);
-    mp.players = [{ peerId: mp.peer.id, name: 'Hôte (Rouge)', color: 'red', isAI: false, connected: true }];
+    // L'hôte est toujours P1 (Rouge). Libellé J1 si 2 joueurs, sinon "Hôte".
+    const hostName = setupCount === 2 ? 'J1' : 'Hôte (Rouge)';
+    mp.players = [{
+      peerId: mp.peer.id,
+      name: hostName,
+      color: 'red',
+      isAI: false,
+      connected: true
+    }];
     fillLobbySlotsWithAI();
     updateHostLobbyUI();
   });
@@ -1876,19 +1986,22 @@ function findPlayerByReconnectToken(token) {
 
 function fillLobbySlotsWithAI() {
   const activeColors = COLOR_SETS[setupCount];
-  // Conserver les joueurs humains déjà connectés
+  // Conserver les joueurs humains déjà connectés (ex: l'hôte, ou un client qui s'est reconnecté)
   const humanPlayers = mp.players.filter(p => !p.isAI);
-
   mp.players = [...humanPlayers];
 
-  activeColors.forEach((color) => {
+  activeColors.forEach((color, idx) => {
     if (!mp.players.some(p => p.color === color)) {
+      const wantsAI = setupTypes[color] === 'ai';
+      // Générer un label J1/J2/etc. pour les slots multi-humains
+      const playerNum = mp.players.length + 1;
+      const baseName = (setupCount === 2 && wantsAI === false) ? `J${playerNum}` : `Joueur ${COLOR_NAMES[color]}`;
       mp.players.push({
-        peerId: 'AI-' + color,
-        name: `Joueur ${COLOR_NAMES[color]} (IA)`,
+        peerId: (wantsAI ? 'AI-' : 'WAIT-') + color,
+        name: wantsAI ? `${baseName} (IA)` : `${baseName} (en attente)`,
         color: color,
-        isAI: true,
-        connected: true
+        isAI: wantsAI,
+        connected: wantsAI  // Une IA est toujours "connectée", un humain en attente ne l'est pas
       });
     }
   });
@@ -1974,23 +2087,36 @@ function handleHostMessage(conn, data) {
       }
     }
 
-    // 2) Sinon, rejoindre un slot IA libre
-    const nextAiSlot = mp.players.find(p => p.isAI);
-    if (!nextAiSlot) {
+    // 2) Sinon, rejoindre un slot libre (priorité aux slots WAIT pour humains)
+    const waitSlot = mp.players.find(p => p.peerId && p.peerId.startsWith('WAIT-'));
+    const aiSlot = mp.players.find(p => p.isAI);
+    const targetSlot = waitSlot || aiSlot;
+    if (!targetSlot) {
       conn.send({ type: 'ERROR', message: 'Le salon est complet.' });
       conn.close();
       return;
     }
 
-    conn.color = nextAiSlot.color;
-    conn.playerName = data.name || `Joueur ${COLOR_NAMES[conn.color]}`;
+    conn.color = targetSlot.color;
+    // Calcul du libellé client (J2 en mode 2 joueurs humains, sinon nom fourni)
+    let clientDisplayName = data.name;
+    if (!clientDisplayName) {
+      if (setupCount === 2) {
+        // Compter les humains déjà dans le salon (hôte inclus)
+        const humansAlready = mp.players.filter(p => !p.isAI && p.peerId !== 'AI-' + p.color).length;
+        clientDisplayName = `J${humansAlready + 1}`;
+      } else {
+        clientDisplayName = `Joueur ${COLOR_NAMES[conn.color]}`;
+      }
+    }
+    conn.playerName = clientDisplayName;
     conn.reconnectToken = issueReconnectToken(conn.peer, conn.color);
     mp.conn[conn.peer] = conn;
 
-    nextAiSlot.peerId = conn.peer;
-    nextAiSlot.name = conn.playerName;
-    nextAiSlot.isAI = false;
-    nextAiSlot.connected = true;
+    targetSlot.peerId = conn.peer;
+    targetSlot.name = conn.playerName;
+    targetSlot.isAI = false;
+    targetSlot.connected = true;
 
     log(`<strong>${conn.playerName}</strong> a rejoint le salon !`, true);
     updateHostLobbyUI();
