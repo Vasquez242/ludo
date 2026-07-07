@@ -87,6 +87,7 @@ const state = {
 };
 
 /* ---------- État Multijoueur ---------- */
+const RECONNECT_KEY = 'ludo-royal-reconnect-v1';
 const mp = {
   active: false,
   role: 'local', // 'local' | 'host' | 'client'
@@ -266,7 +267,7 @@ function restoreFromSave() {
   state.dice = s.dice;
   state.rolled = s.rolled;
   state.sixCount = s.sixCount;
-  state.busy = s.busy;
+  state.busy = false;
   state.gameOver = s.gameOver;
   state.ranking = s.ranking.map(c => state.players.find(p => p.color === c));
   return true;
@@ -620,7 +621,20 @@ function joinAsSpectator(roomCode) {
   mp.roomCode = roomCode.toUpperCase().trim();
   if (mp.peer) mp.peer.destroy();
   const id = 'LUDO-SPECT-' + Math.floor(Math.random() * 100000);
-  mp.peer = new Peer(id, peerOptions);
+  const broker = PEER_BROKERS[0];
+  mp.peer = new Peer(id, {
+    host: broker.host,
+    port: broker.port,
+    secure: broker.secure,
+    debug: 1,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+      ],
+    },
+  });
   mp.peer.on('open', () => {
     const conn = mp.peer.connect(mp.roomCode);
     mp.conn[mp.roomCode] = conn;
@@ -1028,7 +1042,11 @@ function createTokens() {
 // Render synchrone des pions (le batching RAF peut masquer les pions sur mobile
 // si la frame est retardée ou si requestAnimationFrame n'est pas disponible).
 function renderTokens() {
-  if (document.querySelectorAll('.token').length === 0 && state.players.length > 0) {
+  let expectedTokenCount = 0;
+  state.players.forEach(p => {
+    expectedTokenCount += p.tokens.length;
+  });
+  if (document.querySelectorAll('.token').length !== expectedTokenCount && state.players.length > 0) {
     createTokens();
     return;
   }
@@ -1112,7 +1130,11 @@ function startGame() {
 
     Object.values(mp.conn).forEach(conn => {
       if (conn.open) {
-        conn.send({ type: 'START_GAME' });
+        conn.send({
+          type: 'START_GAME',
+          rules: rules,
+          gameMode: gameMode
+        });
       }
     });
 
@@ -1171,6 +1193,9 @@ function startGame() {
   renderPlayers();
   log('La partie commence. Bonne chance !', true);
   beginTurn();
+  if (mp.active && mp.role === 'host') {
+    broadcastState();
+  }
 }
 
 /* ==================== LOGIQUE DES TOURS ==================== */
@@ -2054,6 +2079,17 @@ function broadcastState() {
 }
 
 function handleHostMessage(conn, data) {
+  if (data.type === 'SPECTATE') {
+    conn.isSpectator = true;
+    mp.conn[conn.peer] = conn;
+    log('Un spectateur a rejoint le salon 👁️', true);
+    if (gameScreen.classList.contains('active')) {
+      conn.send({ type: 'START_GAME', rules: rules, gameMode: gameMode });
+      broadcastState();
+    }
+    return;
+  }
+
   if (data.type === 'JOIN') {
     // 1) Tentative de reconnexion par token persistant
     if (data.reconnectToken && mp.reconnectTokens[data.reconnectToken]) {
@@ -2071,7 +2107,10 @@ function handleHostMessage(conn, data) {
         }
         log(`<strong>${conn.playerName}</strong> s'est reconnecté !`, true);
         conn.send({ type: 'JOIN_OK', color: entry.color, reconnectToken: data.reconnectToken, reconnected: true });
-        if (gameScreen.classList.contains('active')) broadcastState();
+        if (gameScreen.classList.contains('active')) {
+          conn.send({ type: 'START_GAME', rules: rules, gameMode: gameMode });
+          broadcastState();
+        }
         return;
       }
     }
@@ -2134,6 +2173,11 @@ function handleHostMessage(conn, data) {
 function handleClientDisconnection(peerId) {
   const conn = mp.conn[peerId];
   if (conn) {
+    if (conn.isSpectator) {
+      log('Un spectateur a quitté le salon.', true);
+      delete mp.conn[peerId];
+      return;
+    }
     log(`Le joueur <strong>${conn.playerName}</strong> s'est déconnecté.`, true);
     delete mp.conn[peerId];
 
@@ -2308,9 +2352,23 @@ function handleClientMessage(data) {
   }
 
   if (data.type === 'START_GAME') {
+    if (data.rules) Object.assign(rules, data.rules);
+    if (data.gameMode) gameMode = data.gameMode;
+
     setupScreen.classList.remove('active');
     gameScreen.classList.add('active');
     logEl.innerHTML = '';
+
+    // Initialiser state.players à partir de mp.players immédiatement
+    state.players = mp.players.map(p => ({
+      color: p.color,
+      name: p.name,
+      isAI: p.isAI,
+      tokens: gameMode === GAME_MODES.express ? [-1, -1] : [-1, -1, -1, -1],
+      finishedRank: 0,
+      captures: 0,
+      wasCaptured: false,
+    }));
 
     buildBoard();
     createTokens();
@@ -2323,12 +2381,20 @@ function handleClientMessage(data) {
   }
 
   if (data.type === 'SYNC_STATE') {
+    // Si l'écran de jeu n'est pas encore actif (cas de reconnexion ou arrivée tardive)
+    if (!gameScreen.classList.contains('active')) {
+      setupScreen.classList.remove('active');
+      gameScreen.classList.add('active');
+      logEl.innerHTML = '';
+      buildBoard();
+      showChat(mp.active && mp.role !== 'spectator');
+    }
+
     // Mettre à jour l'état de jeu avec celui reçu de l'hôte
     state.current = data.state.current;
     state.dice = data.state.dice;
     state.rolled = data.state.rolled;
     state.sixCount = data.state.sixCount;
-    state.busy = data.state.busy;
     state.gameOver = data.state.gameOver;
 
     // Mettre à jour la face du dé visuellement
@@ -2516,14 +2582,20 @@ function requestShakePermission() {
   }
   if (shakePermissionAsked) return;
   shakePermissionAsked = true;
-  DeviceMotionEvent.requestPermission()
-    .then((permissionState) => {
-      if (permissionState === 'granted') {
-        enableShakeListener();
-        log('Capteur de secouement activé avec succès !', true);
-      }
-    })
-    .catch((e) => console.warn('Shake permission denied or failed', e));
+  try {
+    const res = DeviceMotionEvent.requestPermission();
+    if (res && typeof res.then === 'function') {
+      res.then((permissionState) => {
+        if (permissionState === 'granted') {
+          enableShakeListener();
+          log('Capteur de secouement activé avec succès !', true);
+        }
+      })
+      .catch((e) => console.warn('Shake permission denied or failed', e));
+    }
+  } catch (e) {
+    console.warn('DeviceMotionEvent.requestPermission failed synchronously', e);
+  }
 }
 
 function checkUrlParams() {
